@@ -251,11 +251,8 @@ impl FileExplorerRenderer {
         // Calculate the left side width for padding calculation
         let indent_width = indent * 2;
         let indicator_width = 2; // "▼ " or "  "
-        // Chain prefix contributes each name plus a "/" separator.
-        let chain_prefix_width: usize = chain_prefix_names
-            .iter()
-            .map(|s| str_width(s) + 1)
-            .sum();
+                                 // Chain prefix contributes each name plus a "/" separator.
+        let chain_prefix_width: usize = chain_prefix_names.iter().map(|s| str_width(s) + 1).sum();
         let name_width = str_width(&node.entry.name);
         let left_side_width = indent_width + indicator_width + chain_prefix_width + name_width;
 

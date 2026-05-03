@@ -265,19 +265,37 @@ impl FileTreeView {
     /// Get currently visible nodes with their indent levels
     ///
     /// Returns a list of (NodeId, indent_level) tuples for rendering. In
-    /// compact-directory mode, the indent for a chain anchor is the depth
-    /// of the *outermost* directory folded into its row, so the chain
-    /// renders at the same level as it would have without compaction.
+    /// compact-directory mode the indent skips every absorbed ancestor
+    /// in the path so every row sits beneath its visible parent — both
+    /// chain anchors *and* their descendants render at the right level.
     pub fn get_display_nodes(&self) -> Vec<(NodeId, usize)> {
         let visible = self.filtered_visible_nodes();
         visible
             .into_iter()
             .map(|id| {
                 let depth = self.tree.get_depth(id);
-                let chain_len = self.compact_chain_for_anchor(id).len();
-                (id, depth.saturating_sub(chain_len))
+                let absorbed = self.count_absorbed_ancestors(id);
+                (id, depth.saturating_sub(absorbed))
             })
             .collect()
+    }
+
+    /// Count ancestors of `id` whose row is folded into a deeper anchor's
+    /// row under compact mode. Returns 0 when compact mode is off.
+    fn count_absorbed_ancestors(&self, id: NodeId) -> usize {
+        let mut count = 0usize;
+        let mut cur = id;
+        loop {
+            let parent_id = match self.tree.get_node(cur).and_then(|n| n.parent) {
+                Some(p) => p,
+                None => break,
+            };
+            if self.is_absorbed(parent_id) {
+                count += 1;
+            }
+            cur = parent_id;
+        }
+        count
     }
 
     /// Get the currently selected node ID
@@ -571,10 +589,7 @@ impl FileTreeView {
                     // up until we reach a non-absorbed ancestor so the
                     // cursor lands on a different visible row.
                     while self.is_absorbed(parent_id) {
-                        let next = self
-                            .tree
-                            .get_node(parent_id)
-                            .and_then(|n| n.parent);
+                        let next = self.tree.get_node(parent_id).and_then(|n| n.parent);
                         match next {
                             Some(p) => parent_id = p,
                             None => break,
@@ -1160,5 +1175,310 @@ mod tests {
                 .filter_map(|&id| view.tree().get_node(id).map(|n| n.entry.name.clone()))
                 .collect::<Vec<_>>()
         );
+    }
+
+    // ============================================================
+    // Compact-directory tests
+    //
+    // Fixture layout (created by `create_chain_view`):
+    //
+    //     <root>/
+    //       chain/
+    //         a/
+    //           b/
+    //             c/
+    //               leaf.txt
+    //       sibling/
+    //         other.txt
+    //
+    // The `chain → a → b → c` segment is a single-child directory chain.
+    // `c` ends the chain because its only child is a file. `sibling` is
+    // a separate dir at the root level so the root itself has multiple
+    // visible children (and thus is never absorbed).
+    // ============================================================
+
+    async fn create_chain_view() -> (TempDir, FileTreeView) {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        std_fs::create_dir_all(temp_path.join("chain/a/b/c")).unwrap();
+        std_fs::write(temp_path.join("chain/a/b/c/leaf.txt"), "leaf").unwrap();
+        std_fs::create_dir(temp_path.join("sibling")).unwrap();
+        std_fs::write(temp_path.join("sibling/other.txt"), "other").unwrap();
+
+        let backend = Arc::new(StdFileSystem);
+        let manager = Arc::new(FsManager::new(backend));
+        let tree = FileTree::new(temp_path.to_path_buf(), manager)
+            .await
+            .unwrap();
+        let view = FileTreeView::new(tree);
+
+        (temp_dir, view)
+    }
+
+    /// Resolve a node id from a path relative to the tree root.
+    fn id_for(view: &FileTreeView, rel: &str) -> NodeId {
+        let path = view.tree().root_path().join(rel);
+        view.tree()
+            .get_node_by_path(&path)
+            .unwrap_or_else(|| panic!("expected node at {:?}", path))
+            .id
+    }
+
+    fn name_of(view: &FileTreeView, id: NodeId) -> String {
+        view.tree().get_node(id).unwrap().entry.name.clone()
+    }
+
+    #[tokio::test]
+    async fn test_compact_chain_collapses_single_child_dirs() {
+        let (_t, mut view) = create_chain_view().await;
+        let root_id = view.tree().root_id();
+        view.tree_mut().expand_node(root_id).await.unwrap();
+
+        // expand_with_chain should drill all the way down to `c` because
+        // every step has exactly one directory child until `c`'s file
+        // child breaks the chain.
+        view.expand_with_chain(id_for(&view, "chain"))
+            .await
+            .unwrap();
+
+        let c_id = id_for(&view, "chain/a/b/c");
+
+        // The chain anchor for `c` is `[chain, a, b]`, outermost-first.
+        let prefix = view.compact_chain_for_anchor(c_id);
+        let prefix_names: Vec<String> = prefix.iter().map(|&id| name_of(&view, id)).collect();
+        assert_eq!(prefix_names, vec!["chain", "a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn test_compact_display_skips_absorbed_nodes() {
+        let (_t, mut view) = create_chain_view().await;
+        let root_id = view.tree().root_id();
+        view.tree_mut().expand_node(root_id).await.unwrap();
+        view.expand_with_chain(id_for(&view, "chain"))
+            .await
+            .unwrap();
+
+        let visible_names: Vec<String> = view
+            .get_display_nodes()
+            .into_iter()
+            .map(|(id, _)| name_of(&view, id))
+            .collect();
+
+        // `chain`, `a`, `b` are folded into `c`'s row and must not appear
+        // as separate rows. `c` is the chain anchor, `leaf.txt` sits
+        // beneath it as its own row, and `sibling` is unaffected.
+        assert!(!visible_names.contains(&"chain".to_string()));
+        assert!(!visible_names.contains(&"a".to_string()));
+        assert!(!visible_names.contains(&"b".to_string()));
+        assert!(visible_names.contains(&"c".to_string()));
+        assert!(visible_names.contains(&"leaf.txt".to_string()));
+        assert!(visible_names.contains(&"sibling".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_compact_indent_preserves_visual_hierarchy() {
+        let (_t, mut view) = create_chain_view().await;
+        let root_id = view.tree().root_id();
+        view.tree_mut().expand_node(root_id).await.unwrap();
+        view.expand_with_chain(id_for(&view, "chain"))
+            .await
+            .unwrap();
+
+        let display = view.get_display_nodes();
+        let indent_for = |target: NodeId| {
+            display
+                .iter()
+                .find(|(id, _)| *id == target)
+                .map(|(_, indent)| *indent)
+                .unwrap_or_else(|| panic!("node {target:?} not in display"))
+        };
+
+        let c_id = id_for(&view, "chain/a/b/c");
+        let leaf_id = id_for(&view, "chain/a/b/c/leaf.txt");
+        let sibling_id = id_for(&view, "sibling");
+
+        // `c` renders at indent 1 (the depth of its outermost folded
+        // ancestor `chain`), even though its raw tree depth is 4.
+        assert_eq!(indent_for(c_id), 1);
+        // `leaf.txt` sits one level deeper than its visible parent `c`,
+        // not at its raw depth of 5.
+        assert_eq!(indent_for(leaf_id), 2);
+        // `sibling` is unaffected by the chain on the other branch.
+        assert_eq!(indent_for(sibling_id), 1);
+    }
+
+    #[tokio::test]
+    async fn test_compact_chain_breaks_at_file_or_branch() {
+        let (_t, mut view) = create_chain_view().await;
+        let root_id = view.tree().root_id();
+        view.tree_mut().expand_node(root_id).await.unwrap();
+        view.expand_with_chain(id_for(&view, "chain"))
+            .await
+            .unwrap();
+
+        // `c`'s only child is a file (`leaf.txt`), so `c` itself is not
+        // absorbed and renders as a normal row with no further chain.
+        let c_id = id_for(&view, "chain/a/b/c");
+        let visible_names: Vec<String> = view
+            .get_display_nodes()
+            .into_iter()
+            .map(|(id, _)| name_of(&view, id))
+            .collect();
+        assert!(visible_names.contains(&"c".to_string()));
+
+        // `leaf.txt` (file) carries no chain prefix.
+        let leaf_id = id_for(&view, "chain/a/b/c/leaf.txt");
+        assert!(view.compact_chain_for_anchor(leaf_id).is_empty());
+
+        // The root never participates in a chain — even when it has just
+        // one visible child, it stays at the top of the tree on its own
+        // row. Verify by collapsing siblings out of view.
+        // (Here we just assert the principle directly: root is never the
+        // start of a folded prefix for any other anchor.)
+        let prefix_for_c = view.compact_chain_for_anchor(c_id);
+        assert!(!prefix_for_c.contains(&root_id));
+    }
+
+    #[tokio::test]
+    async fn test_compact_disabled_renders_each_node_as_row() {
+        let (_t, mut view) = create_chain_view().await;
+        let root_id = view.tree().root_id();
+        view.tree_mut().expand_node(root_id).await.unwrap();
+
+        // Expand the whole chain with compact mode on, then turn it off.
+        // All four directories should now render as separate rows at
+        // their raw depths.
+        view.expand_with_chain(id_for(&view, "chain"))
+            .await
+            .unwrap();
+        view.set_compact_directories(false);
+
+        let display = view.get_display_nodes();
+        let visible_names: Vec<String> =
+            display.iter().map(|(id, _)| name_of(&view, *id)).collect();
+        assert!(visible_names.contains(&"chain".to_string()));
+        assert!(visible_names.contains(&"a".to_string()));
+        assert!(visible_names.contains(&"b".to_string()));
+        assert!(visible_names.contains(&"c".to_string()));
+
+        // Indents should reflect raw depths since nothing is folded.
+        let indent_for = |target: NodeId| {
+            display
+                .iter()
+                .find(|(id, _)| *id == target)
+                .map(|(_, indent)| *indent)
+                .unwrap()
+        };
+        assert_eq!(indent_for(id_for(&view, "chain")), 1);
+        assert_eq!(indent_for(id_for(&view, "chain/a")), 2);
+        assert_eq!(indent_for(id_for(&view, "chain/a/b")), 3);
+        assert_eq!(indent_for(id_for(&view, "chain/a/b/c")), 4);
+
+        // No chain prefix is ever produced when compact mode is off.
+        assert!(view
+            .compact_chain_for_anchor(id_for(&view, "chain/a/b/c"))
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_expand_with_chain_auto_expands_descendants() {
+        let (_t, mut view) = create_chain_view().await;
+        let root_id = view.tree().root_id();
+        view.tree_mut().expand_node(root_id).await.unwrap();
+
+        let chain_id = id_for(&view, "chain");
+        // Pre-condition: `chain` is collapsed.
+        assert!(view.tree().get_node(chain_id).unwrap().is_collapsed());
+
+        view.expand_with_chain(chain_id).await.unwrap();
+
+        // Every dir in the chain (including `c`) should now be expanded
+        // so their tree nodes exist and are reachable. Without
+        // auto-chain-expand the user would have to expand each level
+        // manually before the chain could form visually.
+        for rel in ["chain", "chain/a", "chain/a/b", "chain/a/b/c"] {
+            let id = id_for(&view, rel);
+            assert!(
+                view.tree().get_node(id).unwrap().is_expanded(),
+                "{rel} should be auto-expanded by expand_with_chain"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_toggle_with_chain_collapses_chain_root_only() {
+        let (_t, mut view) = create_chain_view().await;
+        let root_id = view.tree().root_id();
+        view.tree_mut().expand_node(root_id).await.unwrap();
+
+        let chain_id = id_for(&view, "chain");
+        // First toggle: expand + auto-reveal chain.
+        view.toggle_with_chain(chain_id).await.unwrap();
+        assert!(view.tree().get_node(chain_id).unwrap().is_expanded());
+
+        // Second toggle: collapse the chain root. `chain` is now
+        // collapsed; its descendants get dropped from the tree (per
+        // `collapse_node`'s own contract) so the chain is fully reset.
+        view.toggle_with_chain(chain_id).await.unwrap();
+        assert!(view.tree().get_node(chain_id).unwrap().is_collapsed());
+    }
+
+    #[tokio::test]
+    async fn test_set_selected_promotes_absorbed_node_to_anchor() {
+        let (_t, mut view) = create_chain_view().await;
+        let root_id = view.tree().root_id();
+        view.tree_mut().expand_node(root_id).await.unwrap();
+        view.expand_with_chain(id_for(&view, "chain"))
+            .await
+            .unwrap();
+
+        // `chain` is absorbed into `c`'s row. Selecting `chain` should
+        // land the cursor on `c` so the cursor always sits on a
+        // rendered row.
+        let chain_id = id_for(&view, "chain");
+        let c_id = id_for(&view, "chain/a/b/c");
+        view.set_selected(Some(chain_id));
+        assert_eq!(view.get_selected(), Some(c_id));
+    }
+
+    #[tokio::test]
+    async fn test_select_parent_skips_absorbed_ancestors() {
+        let (_t, mut view) = create_chain_view().await;
+        let root_id = view.tree().root_id();
+        view.tree_mut().expand_node(root_id).await.unwrap();
+        view.expand_with_chain(id_for(&view, "chain"))
+            .await
+            .unwrap();
+
+        // Cursor on `leaf.txt` → its raw parent is `c` (visible), so
+        // select_parent lands on `c`.
+        let leaf_id = id_for(&view, "chain/a/b/c/leaf.txt");
+        let c_id = id_for(&view, "chain/a/b/c");
+        view.set_selected(Some(leaf_id));
+        view.select_parent();
+        assert_eq!(view.get_selected(), Some(c_id));
+
+        // From `c`, the immediate parent `b` is absorbed (and so are
+        // `a` and `chain`). select_parent must skip them all and land on
+        // the root, the next non-absorbed ancestor.
+        view.select_parent();
+        assert_eq!(view.get_selected(), Some(root_id));
+    }
+
+    #[tokio::test]
+    async fn test_compact_visible_count_matches_display_rows() {
+        let (_t, mut view) = create_chain_view().await;
+        let root_id = view.tree().root_id();
+        view.tree_mut().expand_node(root_id).await.unwrap();
+        view.expand_with_chain(id_for(&view, "chain"))
+            .await
+            .unwrap();
+
+        // Rows: root, c (chain anchor), leaf.txt, sibling — 4 in total.
+        // `chain`, `a`, `b` are folded into `c`'s row and don't count.
+        // `sibling` stays collapsed so its file child is not visible.
+        assert_eq!(view.visible_count(), 4);
+        assert_eq!(view.get_display_nodes().len(), 4);
     }
 }
