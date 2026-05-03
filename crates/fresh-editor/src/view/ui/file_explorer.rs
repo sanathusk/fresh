@@ -239,11 +239,25 @@ impl FileExplorerRenderer {
         // Build the line with indentation and tree structure
         let mut spans = Vec::new();
 
+        // Names of any ancestor directories that compact-mode folded into
+        // this row. Outermost-first; each gets prefixed before the anchor
+        // name and joined by `/`.
+        let chain_prefix_names: Vec<String> = view
+            .compact_chain_for_anchor(node_id)
+            .into_iter()
+            .filter_map(|id| view.tree().get_node(id).map(|n| n.entry.name.clone()))
+            .collect();
+
         // Calculate the left side width for padding calculation
         let indent_width = indent * 2;
         let indicator_width = 2; // "▼ " or "  "
+        // Chain prefix contributes each name plus a "/" separator.
+        let chain_prefix_width: usize = chain_prefix_names
+            .iter()
+            .map(|s| str_width(s) + 1)
+            .sum();
         let name_width = str_width(&node.entry.name);
-        let left_side_width = indent_width + indicator_width + name_width;
+        let left_side_width = indent_width + indicator_width + chain_prefix_width + name_width;
 
         // Indentation
         if indent > 0 {
@@ -293,6 +307,17 @@ impl FileExplorerRenderer {
         } else {
             theme.editor_fg
         };
+
+        // Compact-directory chain prefix: render the folded ancestor names,
+        // each followed by "/", before the anchor name. Use a dimmed
+        // separator so the chain reads as breadcrumbs rather than a flat
+        // path.
+        let chain_segment_style = Style::default().fg(theme.syntax_keyword);
+        let chain_separator_style = Style::default().fg(theme.line_number_fg);
+        for name in &chain_prefix_names {
+            spans.push(Span::styled(name.clone(), chain_segment_style));
+            spans.push(Span::styled("/", chain_separator_style));
+        }
 
         // Render name with match highlighting
         if let Some(fm) = fuzzy_match {

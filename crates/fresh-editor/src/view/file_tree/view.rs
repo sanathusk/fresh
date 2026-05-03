@@ -28,6 +28,9 @@ pub struct FileTreeView {
     pub(crate) viewport_height: usize,
     /// Search state for quick navigation
     search: FileExplorerSearch,
+    /// Render single-child directory chains as a single row
+    /// (`foo/bar/baz`). Mirrors VSCode's `explorer.compactFolders`.
+    compact_directories: bool,
 }
 
 /// Sort mode for file tree entries
@@ -55,7 +58,158 @@ impl FileTreeView {
             ignore_patterns: IgnorePatterns::new(),
             viewport_height: 10, // Default, will be updated during rendering
             search: FileExplorerSearch::new(),
+            compact_directories: true,
         }
+    }
+
+    /// Toggle/set the compact-directory rendering mode.
+    pub fn set_compact_directories(&mut self, enabled: bool) {
+        self.compact_directories = enabled;
+    }
+
+    /// Whether compact-directory rendering is enabled.
+    pub fn compact_directories(&self) -> bool {
+        self.compact_directories
+    }
+
+    /// Returns true if `node_id` is a directory whose row gets folded into
+    /// a deeper anchor's row under compact-directory rendering — i.e. it is
+    /// expanded with exactly one visible child that is also a directory.
+    /// Root is never absorbed.
+    fn is_absorbed(&self, node_id: NodeId) -> bool {
+        if !self.compact_directories {
+            return false;
+        }
+        if node_id == self.tree.root_id() {
+            return false;
+        }
+        let node = match self.tree.get_node(node_id) {
+            Some(n) => n,
+            None => return false,
+        };
+        if !node.is_dir() || !node.is_expanded() {
+            return false;
+        }
+        let mut visible_iter = node
+            .children
+            .iter()
+            .copied()
+            .filter(|&c| self.is_node_visible(c));
+        let only_child = match visible_iter.next() {
+            Some(c) => c,
+            None => return false,
+        };
+        if visible_iter.next().is_some() {
+            return false;
+        }
+        match self.tree.get_node(only_child) {
+            Some(child) => child.is_dir(),
+            None => false,
+        }
+    }
+
+    /// Expand `node_id` and then walk down any single-child-directory
+    /// chain, expanding each step so the full chain reveals on a single
+    /// rendered row. No-op when compact mode is off or when the node
+    /// isn't a directory. Stops as soon as a step has zero, multiple, or
+    /// non-directory visible children.
+    pub async fn expand_with_chain(&mut self, node_id: NodeId) -> std::io::Result<()> {
+        // Always perform the first expansion so callers can use this in
+        // place of `tree.expand_node` regardless of compact mode.
+        let needs_initial_expand = self
+            .tree
+            .get_node(node_id)
+            .map(|n| n.is_dir() && !n.is_expanded())
+            .unwrap_or(false);
+        if needs_initial_expand {
+            self.tree.expand_node(node_id).await?;
+        }
+        if !self.compact_directories {
+            return Ok(());
+        }
+        let mut cur = node_id;
+        loop {
+            // Determine the unique visible directory child of `cur`, if
+            // one exists. Limit the immutable borrow to this block so the
+            // subsequent `expand_node` call can take a mutable borrow.
+            let next = {
+                let node = match self.tree.get_node(cur) {
+                    Some(n) => n,
+                    None => return Ok(()),
+                };
+                if !node.is_expanded() {
+                    return Ok(());
+                }
+                let mut visible = node
+                    .children
+                    .iter()
+                    .copied()
+                    .filter(|&c| self.is_node_visible(c));
+                let only = match visible.next() {
+                    Some(c) => c,
+                    None => return Ok(()),
+                };
+                if visible.next().is_some() {
+                    return Ok(());
+                }
+                match self.tree.get_node(only) {
+                    Some(child) if child.is_dir() => only,
+                    _ => return Ok(()),
+                }
+            };
+            let already_expanded = self
+                .tree
+                .get_node(next)
+                .map(|n| n.is_expanded())
+                .unwrap_or(false);
+            if !already_expanded {
+                self.tree.expand_node(next).await?;
+            }
+            cur = next;
+        }
+    }
+
+    /// Toggle expansion on `node_id`. When expanding, also reveals the
+    /// rest of any single-child-directory chain (see `expand_with_chain`).
+    pub async fn toggle_with_chain(&mut self, node_id: NodeId) -> std::io::Result<()> {
+        let was_expanded = self
+            .tree
+            .get_node(node_id)
+            .map(|n| n.is_expanded())
+            .unwrap_or(false);
+        self.tree.toggle_node(node_id).await?;
+        if !was_expanded {
+            self.expand_with_chain(node_id).await?;
+        }
+        Ok(())
+    }
+
+    /// Build the compact-chain prefix for `anchor`: the chain of ancestor
+    /// directories that share its row, ordered outermost-first. Empty when
+    /// compact mode is off or the anchor isn't part of a chain.
+    pub fn compact_chain_for_anchor(&self, anchor: NodeId) -> Vec<NodeId> {
+        if !self.compact_directories {
+            return Vec::new();
+        }
+        let mut prefix = Vec::new();
+        let mut cur = anchor;
+        loop {
+            let cur_node = match self.tree.get_node(cur) {
+                Some(n) => n,
+                None => break,
+            };
+            let parent_id = match cur_node.parent {
+                Some(p) => p,
+                None => break,
+            };
+            if !self.is_absorbed(parent_id) {
+                break;
+            }
+            prefix.push(parent_id);
+            cur = parent_id;
+        }
+        prefix.reverse();
+        prefix
     }
 
     /// Get visible nodes filtered by ignore patterns (hidden files, gitignored, etc.)
@@ -69,13 +223,20 @@ impl FileTreeView {
     }
 
     /// Recursively collect visible nodes, skipping ignored subtrees.
+    /// When compact-directory mode is enabled, intermediate nodes that are
+    /// folded into a deeper anchor's row are also skipped — only the
+    /// anchor (the deepest non-absorbed node in the chain) appears in the
+    /// list, so navigation, indexing, and scrolling all operate on
+    /// rendered rows rather than raw tree nodes.
     fn collect_filtered_visible(&self, id: NodeId, result: &mut Vec<NodeId>) {
         let is_root = id == self.tree.root_id();
         if !is_root && !self.is_node_visible(id) {
             return;
         }
 
-        result.push(id);
+        if !self.is_absorbed(id) {
+            result.push(id);
+        }
 
         if let Some(node) = self.tree.get_node(id) {
             if node.is_expanded() {
@@ -103,14 +264,18 @@ impl FileTreeView {
 
     /// Get currently visible nodes with their indent levels
     ///
-    /// Returns a list of (NodeId, indent_level) tuples for rendering.
+    /// Returns a list of (NodeId, indent_level) tuples for rendering. In
+    /// compact-directory mode, the indent for a chain anchor is the depth
+    /// of the *outermost* directory folded into its row, so the chain
+    /// renders at the same level as it would have without compaction.
     pub fn get_display_nodes(&self) -> Vec<(NodeId, usize)> {
         let visible = self.filtered_visible_nodes();
         visible
             .into_iter()
             .map(|id| {
                 let depth = self.tree.get_depth(id);
-                (id, depth)
+                let chain_len = self.compact_chain_for_anchor(id).len();
+                (id, depth.saturating_sub(chain_len))
             })
             .collect()
     }
@@ -120,9 +285,29 @@ impl FileTreeView {
         self.selected_node
     }
 
-    /// Set the selected node
+    /// Set the selected node. The id is promoted to its chain anchor so
+    /// the cursor always lands on a rendered row in compact mode.
     pub fn set_selected(&mut self, node_id: Option<NodeId>) {
-        self.selected_node = node_id;
+        self.selected_node = node_id.map(|id| self.promote_to_anchor(id));
+    }
+
+    /// Walk down a chain of absorbed directories until reaching the
+    /// non-absorbed anchor. For non-absorbed nodes returns the input.
+    fn promote_to_anchor(&self, node_id: NodeId) -> NodeId {
+        let mut cur = node_id;
+        while self.is_absorbed(cur) {
+            let next = self.tree.get_node(cur).and_then(|node| {
+                node.children
+                    .iter()
+                    .copied()
+                    .find(|&c| self.is_node_visible(c))
+            });
+            match next {
+                Some(c) => cur = c,
+                None => break,
+            }
+        }
+        cur
     }
 
     /// Select the next visible node (clears multi-selection)
@@ -380,7 +565,21 @@ impl FileTreeView {
     pub fn select_parent(&mut self) {
         if let Some(current) = self.selected_node {
             if let Some(node) = self.tree.get_node(current) {
-                if let Some(parent_id) = node.parent {
+                if let Some(mut parent_id) = node.parent {
+                    // In compact mode, the immediate parent may be an
+                    // absorbed directory folded into this same row. Walk
+                    // up until we reach a non-absorbed ancestor so the
+                    // cursor lands on a different visible row.
+                    while self.is_absorbed(parent_id) {
+                        let next = self
+                            .tree
+                            .get_node(parent_id)
+                            .and_then(|n| n.parent);
+                        match next {
+                            Some(p) => parent_id = p,
+                            None => break,
+                        }
+                    }
                     self.selected_node = Some(parent_id);
                 }
             }
@@ -445,7 +644,8 @@ impl FileTreeView {
     /// Navigate to a specific path if it exists in the tree
     pub fn navigate_to_path(&mut self, path: &std::path::Path) {
         if let Some(node) = self.tree.get_node_by_path(path) {
-            self.selected_node = Some(node.id);
+            let id = node.id;
+            self.selected_node = Some(self.promote_to_anchor(id));
             self.update_scroll_for_selection();
         }
     }
@@ -533,7 +733,7 @@ impl FileTreeView {
     /// - There was an error expanding intermediate directories
     pub async fn expand_and_select_file(&mut self, path: &std::path::Path) -> bool {
         if let Some(node_id) = self.tree.expand_to_path(path).await {
-            self.selected_node = Some(node_id);
+            self.selected_node = Some(self.promote_to_anchor(node_id));
             true
         } else {
             false

@@ -134,7 +134,8 @@
         "preview_tabs": true,
         "side": "left",
         "auto_open_on_last_buffer_close": true,
-        "follow_active_buffer": false
+        "follow_active_buffer": false,
+        "compact_directories": true
       }
     },
     "file_browser": {
@@ -958,6 +959,11 @@
           "description": "When the file explorer sidebar is open, automatically expand the\ntree and highlight the file that corresponds to the active buffer\nwhenever you switch tabs. Set to `true` to keep the explorer\nselection in sync with the active tab.\nDefault: false",
           "type": "boolean",
           "default": false
+        },
+        "compact_directories": {
+          "description": "Render single-child directory chains on a single line, e.g.\n`src/main/java/com/example`. Only applies when each intermediate\ndirectory in the chain is expanded and has exactly one visible\nchild that is itself a directory. Mirrors VSCode's\n`explorer.compactFolders`.\nDefault: true",
+          "type": "boolean",
+          "default": true
         }
       }
     },

@@ -1396,6 +1396,8 @@ impl Editor {
             .set_show_gitignored(show_gitignored);
         tracing::debug!("Applied show_gitignored={} on init", show_gitignored);
 
+        view.set_compact_directories(self.config.file_explorer.compact_directories);
+
         self.active_window_mut().file_explorer = Some(view);
         self.set_status_message(t!("status.file_explorer_ready").to_string());
 

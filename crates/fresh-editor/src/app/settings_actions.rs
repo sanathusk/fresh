@@ -192,6 +192,7 @@ impl Editor {
             let patterns = explorer.ignore_patterns_mut();
             patterns.set_show_hidden(self.config.file_explorer.show_hidden);
             patterns.set_show_gitignored(self.config.file_explorer.show_gitignored);
+            explorer.set_compact_directories(self.config.file_explorer.compact_directories);
         }
 
         // On Windows, switch mouse tracking mode when mouse_hover_enabled changes.

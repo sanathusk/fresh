@@ -347,6 +347,7 @@ pub struct PartialFileExplorerConfig {
     pub side: Option<crate::config::FileExplorerSide>,
     pub auto_open_on_last_buffer_close: Option<bool>,
     pub follow_active_buffer: Option<bool>,
+    pub compact_directories: Option<bool>,
 }
 
 impl Merge for PartialFileExplorerConfig {
@@ -363,6 +364,8 @@ impl Merge for PartialFileExplorerConfig {
             .merge_from(&other.auto_open_on_last_buffer_close);
         self.follow_active_buffer
             .merge_from(&other.follow_active_buffer);
+        self.compact_directories
+            .merge_from(&other.compact_directories);
     }
 }
 
@@ -770,6 +773,7 @@ impl From<&FileExplorerConfig> for PartialFileExplorerConfig {
             side: Some(cfg.side),
             auto_open_on_last_buffer_close: Some(cfg.auto_open_on_last_buffer_close),
             follow_active_buffer: Some(cfg.follow_active_buffer),
+            compact_directories: Some(cfg.compact_directories),
         }
     }
 }
@@ -792,6 +796,9 @@ impl PartialFileExplorerConfig {
             follow_active_buffer: self
                 .follow_active_buffer
                 .unwrap_or(defaults.follow_active_buffer),
+            compact_directories: self
+                .compact_directories
+                .unwrap_or(defaults.compact_directories),
         }
     }
 }

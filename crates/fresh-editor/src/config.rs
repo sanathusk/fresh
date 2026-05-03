@@ -1531,6 +1531,15 @@ pub struct FileExplorerConfig {
     /// Default: false
     #[serde(default = "default_false")]
     pub follow_active_buffer: bool,
+
+    /// Render single-child directory chains on a single line, e.g.
+    /// `src/main/java/com/example`. Only applies when each intermediate
+    /// directory in the chain is expanded and has exactly one visible
+    /// child that is itself a directory. Mirrors VSCode's
+    /// `explorer.compactFolders`.
+    /// Default: true
+    #[serde(default = "default_true")]
+    pub compact_directories: bool,
 }
 
 /// Width configuration for the file explorer.
@@ -1888,6 +1897,7 @@ impl Default for FileExplorerConfig {
             side: default_explorer_side(),
             auto_open_on_last_buffer_close: true,
             follow_active_buffer: false,
+            compact_directories: true,
         }
     }
 }

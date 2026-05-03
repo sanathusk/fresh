@@ -310,8 +310,7 @@ impl Editor {
                 .get_mut(&active_id)
                 .and_then(|w| w.file_explorer.as_mut()),
         ) {
-            let tree = explorer.tree_mut();
-            let result = runtime.block_on(tree.toggle_node(selected_id));
+            let result = runtime.block_on(explorer.toggle_with_chain(selected_id));
 
             let final_name = explorer
                 .tree()
