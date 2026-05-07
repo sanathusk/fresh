@@ -184,6 +184,53 @@ pub struct Editor {
 }
 ```
 
+### Editor-global vs session-scoped state — the key picture
+
+```
+                       +-----------------------------------+
+                       |          Editor (global)          |
+                       | -------------------------------   |
+                       |   plugin runtime (one QuickJS)    |
+                       |   plugin_global_state ............| <- Conductor's
+                       |     conductor: {                  |    session list,
+                       |       sessions: Map,              |    collision matrix,
+                       |       collisions: Map,            |    agent PTY refs
+                       |       watchers: Map,              |
+                       |     }                             |
+                       |   terminal_manager (all PTYs)     |
+                       |   buffers (storage)               |
+                       |   theme, config, keybindings      |
+                       |   active_session ----------+      |
+                       +----------------------------|------+
+                                                    |
+                  +---------------------------------+----+
+                  |                |                     |
+                  v                v                     v
+         +------------------+ +------------------+ +------------------+
+         |   Session 1      | |   Session 2 *    | |   Session 3      |
+         | ---------------- | | ---------------- | | ---------------- |
+         |  root: /repo     | |  root: /wt/auth  | |  root: /wt/redis |
+         |  file tree       | |  file tree       | |  file tree       |
+         |  ignore matcher  | |  ignore matcher  | |  ignore matcher  |
+         |  LSP clients     | |  LSP clients     | |  LSP clients     |
+         |  watch handles   | |  watch handles   | |  watch handles   |
+         |  split layout    | |  split layout    | |  split layout    |
+         |  buffers: {1}    | |  buffers: {2,3,4}| |  buffers: {5}    |
+         |  panel_ids: {..} | |  panel_ids: {..} | |  panel_ids: {..} |
+         |  plugin_state:{} | |  plugin_state:{} | |  plugin_state:{} |
+         +------------------+ +------------------+ +------------------+
+                                  * ACTIVE
+                                  ^
+                                  |
+                            renderer reads this
+                            once per frame
+```
+
+The renderer's only session-aware read is `editor.active_session()`.
+Everything `Conductor` owns is in `plugin_global_state`, which the
+swap pointer does not touch — that is the structural property that
+makes "Conductor lives above sessions" true.
+
 ### Why buffer storage stays Editor-global
 
 Buffers are owned by `Editor.buffers`; sessions hold a `HashSet<BufferId>` of
@@ -234,6 +281,34 @@ state.
 
 ## Dive: the atomic swap
 
+What visibly changes during `setActiveSession(1 -> 2)`:
+
+```
+BEFORE                                      AFTER
++--------------------------------------+    +--------------------------------------+
+| Session 1: main                      |    | Session 2: feat/auth                 |
++--------------------------------------+    +--------------------------------------+
+|  /repo               | src/main.rs   |    |  /wt/feat-auth      | db/schema.sql  |
+|  - Cargo.toml        |  fn main() {  |    |  - db/              |  CREATE TABLE  |
+|  - src/              |    println!.. |    |    - schema.sql ●   |    users (    |
+|    - lib.rs          |  }            |    |  - src/             |    id SERIAL.. |
+|    - main.rs ●       |               |    |    - models/        |    uuid UUID   |
+|  - tests/            | rust-analyzer |    |      - user.ts ●    |       NOT NULL |
+|                      |   (warm)      |    |  - aider.terminal   |       DEFAULT  |
+|                      |               |    |                     |       uuid_..  |
++--------------------------------------+    +--------------------------------------+
+| NORMAL Ln 12 main.rs                 |    | NORMAL Ln 8 schema.sql               |
++--------------------------------------+    +--------------------------------------+
+
+CHANGES:                            UNCHANGED:
+  file tree root                       Editor.terminal_manager (every PTY)
+  ignore matcher                       Editor.theme, .config, .keybindings
+  buffer set + tabs                    plugin runtime + plugin_global_state
+  active LSPs (now session 2's)        session 1's LSPs (kept warm)
+  split layout                         session 1's watchers
+  status bar buffer state              Conductor's session list/collisions
+```
+
 `editor.setActiveSession(id)` performs:
 
 1. **Snapshot** the outgoing session's last-active split, scroll
@@ -264,6 +339,34 @@ session.
 | Editor shutdown | Persist session list (root, label, layout snapshot) to `.fresh/sessions.json`. Terminal PTYs and agent processes are torn down per existing rules. |
 | Editor startup | Rehydrate session list. **Inactive sessions are lazy** — LSPs and file watchers do not start until the session is first activated. Only the active session is fully spun up. |
 
+A typical lifecycle from a user's perspective:
+
+```
+t=0   Editor starts
+      Editor.sessions = { 1: "main" (active) }
+      plugin_global_state.conductor = { sessions: {}, collisions: {} }
+
+t=1   User: <Leader>o, n, "feat/auth", "aider --message ..."
+      git worktree add ../wt-auth feat/auth
+      createSession({ root: /wt-auth, label: "feat/auth" }) -> id=2
+      createTerminal({ sessionId: 2, cwd: /wt-auth })
+      Editor.sessions = { 1: main (active), 2: feat/auth (warm) }
+
+t=2   User: <Leader>o, Enter on session 2
+      setActiveSession(2)        <-- atomic pointer swap
+      Editor.sessions = { 1: main (warm), 2: feat/auth (active) }
+      Conductor's internal map: untouched
+
+t=3   Agent finishes; transitions to READY (terminal_exit, code 0)
+      Conductor updates its map; status updates in Control Room
+
+t=4   User: <Leader>o, m on session 2 (review skipped)
+      git -C /repo merge feat/auth
+      closeSession(2)            <-- LSPs torn down, watchers dropped
+      git worktree remove /wt-auth
+      Editor.sessions = { 1: main (active) }
+```
+
 ## Control Room placement
 
 The Control Room is a virtual buffer that must render identically
@@ -285,6 +388,370 @@ path already special-cases dock leaves, so this is local.
 remember not to evict the Control Room. Strictly more error-prone.
 
 This design picks **(A)**.
+
+## User-facing screens
+
+This section catalogues every screen the user can see, in the order
+they typically encounter them. Each entry: a sketch, the user
+objective the screen exists to satisfy, the flows that lead in and
+out, and the controls available.
+
+### Screen 1: Empty Conductor (first run)
+
+```
++------------------------------------------------------------------+
+| TABS:  src/main.rs                                               |
++------------------------------------------------------------------+
+|                                                                  |
+|  +============== CONDUCTOR =================================+    |
+|  |                                                          |    |
+|  |   No active sessions.                                    |    |
+|  |                                                          |    |
+|  |   Conductor lets you run multiple coding agents in       |    |
+|  |   parallel git worktrees and switch between them as if   |    |
+|  |   each were its own Fresh session.                       |    |
+|  |                                                          |    |
+|  |   Press  n  to spawn the first one.                      |    |
+|  |   Press Esc to close.                                    |    |
+|  |                                                          |    |
+|  +==========================================================+    |
+|                                                                  |
++------------------------------------------------------------------+
+| NORMAL  Ln 1 main.rs                                             |
++------------------------------------------------------------------+
+```
+
+**Objective.** Discoverability. A user who pressed `<Leader>o` on a
+hunch needs to learn (a) what the feature is and (b) the single key
+that gets them started, without reading docs.
+
+**Entry.** `<Leader>o` from any session, when `sessions.size == 0`
+(only the implicit base session exists).
+
+**Exit.** `n` opens the new-session prompt (Screen 4); `Esc` closes
+the dock and returns the user to whatever they were editing.
+
+**Controls.**
+
+| Key | Action |
+|---|---|
+| `n` | Open new-session prompt |
+| `Esc` | Close Control Room |
+
+### Screen 2: Control Room
+
+```
++------------------------------------------------------------------+
+| TABS:  src/main.rs                                               |
++------------------------------------------------------------------+
+|  +============== CONDUCTOR =================================+    |
+|  | 4 sessions  |  1 awaiting  |  1 collision detected       |    |
+|  | -----------------------------------------------------------    |
+|  | #   ROOT              AGENT          STATE       DIFF  AGE|    |
+|  |     ...................................................  |    |
+|  | 1   /repo (base)      -              ACTIVE      -      - |    |
+|  | 2 > /wt/feat-auth     aider          AWAITING(Y) +12 -0  5m|    |
+|  | 3   /wt/fix-redis     claude -p      RUNNING     +45 -12 12m|  |
+|  | 4   /wt/UI-login      opencode       READY       +104 -4 2m|   |
+|  | -----------------------------------------------------------    |
+|  | PREVIEW (session 2)         | COLLISION RADAR             |    |
+|  |   > Tests failed on line 42 |   src/models/user.ts        |    |
+|  |   > Do you want me to fix   |     - session 2             |    |
+|  |     them? (Y/n): _          |     - session 3             |    |
+|  |                             |   (merge conflict likely)   |    |
+|  | -----------------------------------------------------------    |
+|  | Enter:dive  n:new  d:diff  m:merge  k:kill  Esc:close      |    |
+|  +============================================================+    |
++------------------------------------------------------------------+
+| NORMAL  Ln 1 main.rs   |   conductor: 4 sessions, 1 awaiting    |
++------------------------------------------------------------------+
+```
+
+**Objectives.** This screen has to satisfy three distinct user tasks
+in one view, ranked by frequency:
+
+1. **Triage.** "Does anything need me right now?" — answered by the
+   header line and the AWAITING/ERRORED rows. The user should be
+   able to leave the screen in under two seconds if the answer is
+   no.
+2. **Decide.** "Which session should I dive into / merge / kill?" —
+   answered by the table (state, diff size, age) plus the preview
+   pane for the selected row.
+3. **See trouble coming.** "Are any of these agents about to fight
+   each other?" — answered by the collision radar.
+
+A quaternary objective is **monitoring agent health passively**, but
+the design deliberately does not satisfy that here — passive
+awareness lives in the status bar (deferred; see "deferred features"
+in the design conversation), not in this screen, because this screen
+is full-screen and disruptive.
+
+**Entry.**
+- `<Leader>o` from any session.
+- Auto-open option (configurable, off by default): when any session
+  transitions to AWAITING or ERRORED.
+- After a successful `conductor.new` or `conductor.merge`, returning
+  here.
+
+**Exit.**
+- `Enter`: dive into the selected session (Screen 3).
+- `Esc`: close, return to active session's IDE.
+
+**Common sub-flows.**
+
+- *Quick triage*: open with `<Leader>o`, scan, close with `Esc`. No
+  selection change persisted.
+- *Spawn*: `n` → new-session prompt (Screen 4) → returns here with
+  the new session selected.
+- *Dive*: arrow to row → `Enter` → Screen 3.
+- *Review-and-merge*: arrow to a `READY` row → `d` for diff → `m`
+  to merge if happy → row disappears, worktree torn down.
+- *Abort*: arrow to a stuck or runaway session → `k` → confirmation
+  popup → row disappears.
+- *Resolve collision*: collision radar shows path → click or arrow
+  to it → opens diff comparing the two worktrees' versions.
+
+**Controls.**
+
+| Key | Action | When enabled |
+|---|---|---|
+| Up / Down | Move selection | always |
+| Enter | Dive into selected | session is not the active one |
+| n | New session | always |
+| d | Show diff | selected session has changes |
+| m | Merge selected into base | state == READY |
+| k | Kill agent and remove worktree | not the base session |
+| r | Rename / re-label session | always |
+| Tab | Cycle preview pane focus (terminal / collisions) | always |
+| Esc | Close Control Room | always |
+| Mouse: click row | Select | always |
+| Mouse: double-click row | Dive | session is not the active one |
+
+`m` and `k` both prompt for confirmation via `showActionPopup`
+because both are destructive (work that hasn't been pushed lives
+only in the worktree).
+
+### Screen 3: Session IDE (post-dive)
+
+```
++------------------------------------------------------------------+
+| TABS:  schema.sql ●  | user.ts ●  | aider.terminal               |
++------------------------------------------------------------------+
+|  /wt/feat-auth          | db/schema.sql                          |
+|  - db/                  |  CREATE TABLE users (                  |
+|    - schema.sql ●       |     id SERIAL PRIMARY KEY,             |
+|  - src/                 |     uuid UUID NOT NULL DEFAULT         |
+|    - models/            |       uuid_generate_v4(),  << aider    |
+|      - user.ts ●        |     email VARCHAR(255) UNIQUE NOT NULL,|
+|  - aider.terminal       |     created_at TIMESTAMP DEFAULT NOW() |
+|                         |  );                                    |
+|                         |                                        |
++------------------------------------------------------------------+
+| TERMINAL: aider                                                  |
+|  > Tests failed on line 42.                                      |
+|  > Do you want me to attempt to fix them? (Y/n): Y_              |
++------------------------------------------------------------------+
+| NORMAL Ln 12 schema.sql  |  feat/auth  |  agent: AWAITING        |
++------------------------------------------------------------------+
+```
+
+**Objective.** Provide a *normal Fresh editing experience*, scoped
+to one worktree, with the agent's terminal a keystroke away. The
+user has to be able to forget Conductor exists for the duration of
+their focused work — the IDE must not feel like a sub-mode of
+Conductor.
+
+This screen is "as if Fresh always lived in this worktree."
+Everything that's normally in a Fresh session — file explorer,
+splits, LSP, quick-open, command palette, mouse — works unchanged.
+The only Conductor-specific affordances are:
+
+- The status bar shows the session label (`feat/auth`) and the
+  agent's parsed state (`AWAITING`).
+- `<Leader>o` returns to Control Room.
+- (Optional) `<Leader>n` / `<Leader>p` cycle to next/previous
+  session without going through the Control Room.
+
+**Entry.** `Enter` on a row in the Control Room.
+
+**Exit.**
+- `<Leader>o` → Control Room.
+- `<Leader>n` / `<Leader>p` → directly to another session's IDE.
+- Closing the agent's terminal does not close the session; the user
+  can keep editing or spawn a follow-up agent.
+
+**Common sub-flows.**
+
+- *Respond to prompt*: agent terminal is a tab → switch to it →
+  type `Y` or whatever → return to editing.
+- *Edit the agent's output*: open the modified files normally; LSP
+  is rooted at this worktree, so jump-to-definition works in-tree.
+- *Push back to Control Room*: `<Leader>o`.
+
+**Controls.** All standard Fresh keybindings, plus:
+
+| Key | Action |
+|---|---|
+| `<Leader> o` | Open Control Room |
+| `<Leader> n` | Next session (cycle) |
+| `<Leader> p` | Previous session (cycle) |
+
+### Screen 4: New-session prompt
+
+```
++------------------------------------------------------------------+
+|  TABS:  src/main.rs                                              |
++------------------------------------------------------------------+
+|                                                                  |
+|     +---- New session (1/2) ----+                                |
+|     | Branch name:              |                                |
+|     | feat/auth-schema_         |                                |
+|     +---------------------------+                                |
+|       fix/redis-cache                                            |
+|       feat/login                                                 |
+|       (existing worktree branches)                               |
+|                                                                  |
++------------------------------------------------------------------+
+| NORMAL                                                           |
++------------------------------------------------------------------+
+```
+
+```
++------------------------------------------------------------------+
+|  TABS:  src/main.rs                                              |
++------------------------------------------------------------------+
+|                                                                  |
+|     +---- New session (2/2) ----+                                |
+|     | Agent command:            |                                |
+|     | aider --message "_        |                                |
+|     +---------------------------+                                |
+|       claude -p ""                                               |
+|       opencode --task ""                                         |
+|       aider                                                      |
+|       (recent commands)                                          |
+|                                                                  |
++------------------------------------------------------------------+
+| NORMAL                                                           |
++------------------------------------------------------------------+
+```
+
+**Objective.** Spawn a new agent with as few keystrokes as possible
+while still letting the user pick the branch and command precisely.
+Two steps because the two questions are conceptually distinct:
+*where* the work happens (branch / worktree) and *what* runs there
+(agent command).
+
+**Entry.** `n` from the Control Room.
+
+**Exit.**
+- `Esc` at any step: cancel, no worktree created, return to Control
+  Room.
+- `Enter` on step 2 with a non-empty command: Conductor runs `git
+  worktree add`, calls `createSession`, calls `createTerminal`,
+  sends the command, and returns to Control Room with the new
+  session selected.
+
+**Common sub-flows.**
+
+- *Resume existing branch*: type a name that matches an existing
+  branch, accept the suggestion, agent boots in a worktree on that
+  branch.
+- *Create new branch*: type a name that doesn't exist, Conductor
+  creates the branch off `main` (configurable base) before the
+  worktree.
+- *Reuse last command*: arrow down on step 2 to pick a recent
+  command verbatim.
+
+**Controls.**
+
+| Key | Action |
+|---|---|
+| Type | Edit current step's value |
+| Tab / Down | Cycle to next suggestion |
+| Shift-Tab / Up | Cycle to previous suggestion |
+| Enter | Submit current step |
+| Esc | Cancel |
+
+**Failure modes.** If `git worktree add` fails (dirty worktree,
+locked branch, path collision), Conductor surfaces the git error in
+a `showActionPopup` and leaves the user in the Control Room with no
+state change.
+
+### Screen 5: Collision warning popup
+
+```
++------------------------------------------------------------------+
+|  Session 1 IDE (file tree | editor)                              |
+|                                                                  |
+|     +--- Collision detected ---------------------------+         |
+|     |                                                  |         |
+|     | src/models/user.ts is being modified by:         |         |
+|     |   - session 2 (feat/auth-schema)                 |         |
+|     |   - session 3 (fix/redis-cache)                  |         |
+|     |                                                  |         |
+|     | Merge conflicts highly likely.                   |         |
+|     |                                                  |         |
+|     | [Open Control Room]  [Show diff]  [Dismiss]      |         |
+|     +--------------------------------------------------+         |
+|                                                                  |
++------------------------------------------------------------------+
+```
+
+**Objective.** Make the user aware of an impending merge conflict
+*at the time the second agent first touches the path*, when
+intervention is cheapest, rather than at merge time when the diffs
+have grown.
+
+This is the only Conductor screen that interrupts the user's work
+unsolicited. It is therefore deliberately conservative: it fires
+once per collision-pair-per-session-pair, not on every subsequent
+edit.
+
+**Entry.** Automatic, fired by the collision matrix when a path's
+modifying-session set grows from 1 to 2 (or 2 to 3, etc.).
+
+**Exit.**
+- `Open Control Room`: closes popup, opens Control Room with the
+  collision pane focused on this path.
+- `Show diff`: closes popup, opens a diff buffer comparing the two
+  worktrees' versions of the file.
+- `Dismiss`: closes popup; this collision-pair-on-this-path is
+  silenced for the rest of the editor session. New collision pairs
+  on the same path still fire.
+
+**Controls.** Standard `showActionPopup` controls (Tab to move
+between buttons, Enter to activate, Esc = Dismiss).
+
+### How the screens compose
+
+```
+                              +---------------+
+                              |  Empty (1)    |
+                              +-------+-------+
+                                      | n
+                                      v
+                              +---------------+
+                              |  Prompt (4)   |
+                              +-------+-------+
+                                      | Enter (×2)
+                                      v
+       +-----------+  <Leader>o  +---------------+   Enter   +-------------+
+       | Session   |<------------|  Control Room |---------->| Session IDE |
+       | IDE  (3)  |------------>|     (2)       |<----------|     (3)     |
+       +-----------+             +---------------+  <Leader>o+-------------+
+             ^                          ^
+             |                          |
+             | (any screen)             | (any session, autofire)
+             |                          |
+       +-----+--------------------------+
+       |  Collision popup (5)            |
+       |  [Open Control Room] / [diff]   |
+       +---------------------------------+
+```
+
+The Control Room is the hub; every other screen either feeds into
+it (Empty, Prompt, Collision) or is reached through it (Session
+IDE).
 
 ## Plugin API surface
 
