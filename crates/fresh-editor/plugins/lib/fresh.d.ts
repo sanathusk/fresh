@@ -1600,6 +1600,30 @@ interface EditorAPI {
 	*/
 	closeBuffer(bufferId: number): boolean;
 	/**
+	* Close other buffers in split
+	*/
+	closeOtherBuffersInSplit(bufferId: number, splitId: number): boolean;
+	/**
+	* Close all buffers in split
+	*/
+	closeAllBuffersInSplit(splitId: number): boolean;
+	/**
+	* Close buffers to right in split
+	*/
+	closeBuffersToRightInSplit(bufferId: number, splitId: number): boolean;
+	/**
+	* Close buffers to left in split
+	*/
+	closeBuffersToLeftInSplit(bufferId: number, splitId: number): boolean;
+	/**
+	* Move the active tab one position to the left in the active split
+	*/
+	moveTabLeft(): boolean;
+	/**
+	* Move the active tab one position to the right in the active split
+	*/
+	moveTabRight(): boolean;
+	/**
 	* Start a frame-buffer animation over an arbitrary screen region.
 	* Returns an animation id usable with `cancelAnimation`.
 	*/

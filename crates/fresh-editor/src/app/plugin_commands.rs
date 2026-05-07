@@ -1435,6 +1435,96 @@ impl Editor {
         }
     }
 
+    /// Handle CloseOtherBuffersInSplit command
+    pub(super) fn handle_close_other_buffers_in_split(
+        &mut self,
+        buffer_id: BufferId,
+        split_id: SplitId,
+    ) {
+        self.close_other_tabs_in_split(buffer_id, LeafId(split_id));
+        tracing::info!(
+            "Closed other buffers {:?} in split {:?}",
+            buffer_id,
+            split_id
+        );
+    }
+
+    /// Handle CloseAllBuffersInSplit command
+    pub(super) fn handle_close_all_buffers_in_split(&mut self, split_id: SplitId) {
+        self.close_all_tabs_in_split(LeafId(split_id));
+        tracing::info!("Closed all buffers in split {:?}", split_id);
+    }
+
+    /// Handle CloseBuffersToRightInSplit command
+    pub(super) fn handle_close_buffers_to_right_in_split(
+        &mut self,
+        buffer_id: BufferId,
+        split_id: SplitId,
+    ) {
+        self.close_tabs_to_right_in_split(buffer_id, LeafId(split_id));
+        tracing::info!(
+            "Closed buffers to the right from buffer {:?} in split {:?}",
+            buffer_id,
+            split_id
+        );
+    }
+
+    /// Handle CloseBuffersToLeftInSplit command
+    pub(super) fn handle_close_buffers_to_left_in_split(
+        &mut self,
+        buffer_id: BufferId,
+        split_id: SplitId,
+    ) {
+        self.close_tabs_to_left_in_split(buffer_id, LeafId(split_id));
+        tracing::info!(
+            "Closed buffers to the left from buffer {:?} in split {:?}",
+            buffer_id,
+            split_id
+        );
+    }
+
+    /// Handle MoveTabLeft command - move active tab left in its split
+    pub(super) fn handle_move_tab_left(&mut self) {
+        let split_id = self.split_manager.active_split();
+        if let Some(buffer_id) = self.split_manager.get_buffer_id(split_id.into()) {
+            if let Some(view_state) = self.split_view_states.get_mut(&split_id) {
+                use crate::view::split::TabTarget;
+                if let Some(current_idx) = view_state
+                    .open_buffers
+                    .iter()
+                    .position(|t| *t == TabTarget::Buffer(buffer_id))
+                {
+                    if current_idx > 0 {
+                        view_state.open_buffers.swap(current_idx, current_idx - 1);
+                        tracing::info!("Moved tab left in split {:?}", split_id);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Handle MoveTabRight command - move active tab right in its split
+    pub(super) fn handle_move_tab_right(&mut self) {
+        let split_id = self.split_manager.active_split();
+        if let Some(buffer_id) = self.split_manager.get_buffer_id(split_id.into()) {
+            if let Some(view_state) = self.split_view_states.get_mut(&split_id) {
+                use crate::view::split::TabTarget;
+                if let Some(current_idx) = view_state
+                    .open_buffers
+                    .iter()
+                    .position(|t| *t == TabTarget::Buffer(buffer_id))
+                {
+                    if current_idx < view_state.open_buffers.len() - 1 {
+                        view_state.open_buffers.swap(current_idx, current_idx + 1);
+                        tracing::info!("Moved tab right in split {:?}", split_id);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     // ==================== View/Layout Commands ====================
 
     /// Handle SetLayoutHints command

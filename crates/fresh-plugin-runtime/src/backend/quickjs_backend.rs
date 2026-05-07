@@ -1534,6 +1534,59 @@ impl JsEditorApi {
             .is_ok()
     }
 
+    /// Close other buffers in split
+    pub fn close_other_buffers_in_split(&self, buffer_id: u32, split_id: u32) -> bool {
+        self.command_sender
+            .send(PluginCommand::CloseOtherBuffersInSplit {
+                buffer_id: BufferId(buffer_id as usize),
+                split_id: SplitId(split_id as usize),
+            })
+            .is_ok()
+    }
+
+    /// Close all buffers in split
+    pub fn close_all_buffers_in_split(&self, split_id: u32) -> bool {
+        self.command_sender
+            .send(PluginCommand::CloseAllBuffersInSplit {
+                split_id: SplitId(split_id as usize),
+            })
+            .is_ok()
+    }
+
+    /// Close buffers to right in split
+    pub fn close_buffers_to_right_in_split(&self, buffer_id: u32, split_id: u32) -> bool {
+        self.command_sender
+            .send(PluginCommand::CloseBuffersToRightInSplit {
+                buffer_id: BufferId(buffer_id as usize),
+                split_id: SplitId(split_id as usize),
+            })
+            .is_ok()
+    }
+
+    /// Close buffers to left in split
+    pub fn close_buffers_to_left_in_split(&self, buffer_id: u32, split_id: u32) -> bool {
+        self.command_sender
+            .send(PluginCommand::CloseBuffersToLeftInSplit {
+                buffer_id: BufferId(buffer_id as usize),
+                split_id: SplitId(split_id as usize),
+            })
+            .is_ok()
+    }
+
+    /// Move the active tab to the left in the active split
+    #[plugin_api(ts_return = "boolean")]
+    pub fn move_tab_to_left(&self) -> bool {
+        self.command_sender.send(PluginCommand::MoveTabLeft).is_ok()
+    }
+
+    /// Move the active tab to the right in the active split
+    #[plugin_api(ts_return = "boolean")]
+    pub fn move_tab_to_right(&self) -> bool {
+        self.command_sender
+            .send(PluginCommand::MoveTabRight)
+            .is_ok()
+    }
+
     // === Frame-buffer animations ===
 
     /// Allocate a fresh request id and register this plugin as the callback owner.

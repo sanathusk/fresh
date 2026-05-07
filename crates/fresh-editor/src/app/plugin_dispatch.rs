@@ -830,6 +830,34 @@ impl Editor {
             PluginCommand::CloseBuffer { buffer_id } => {
                 self.handle_close_buffer(buffer_id);
             }
+            PluginCommand::CloseOtherBuffersInSplit {
+                buffer_id,
+                split_id,
+            } => {
+                self.handle_close_other_buffers_in_split(buffer_id, split_id);
+            }
+            PluginCommand::CloseAllBuffersInSplit { split_id } => {
+                self.handle_close_all_buffers_in_split(split_id);
+            }
+            PluginCommand::CloseBuffersToRightInSplit {
+                buffer_id,
+                split_id,
+            } => {
+                self.handle_close_buffers_to_right_in_split(buffer_id, split_id);
+            }
+            PluginCommand::CloseBuffersToLeftInSplit {
+                buffer_id,
+                split_id,
+            } => {
+                self.handle_close_buffers_to_left_in_split(buffer_id, split_id);
+            }
+
+            PluginCommand::MoveTabLeft => {
+                self.handle_move_tab_left();
+            }
+            PluginCommand::MoveTabRight => {
+                self.handle_move_tab_right();
+            }
 
             // ==================== Animation Commands ====================
             PluginCommand::StartAnimationArea { id, rect, kind } => {
