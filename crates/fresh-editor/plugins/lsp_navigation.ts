@@ -56,7 +56,7 @@ function getKindLabel(kind: number): string {
 
 let cachedBufferId: number | null = null;
 let cachedFilePath: string = "";
-let cachedLanguage: string = "";
+let cachedLanguage: string | undefined = undefined;
 
 async function navigateToSymbol(bufferId: number, sym: SymbolItem): Promise<void> {
   const bytePos = await editor.getLineStartPosition(sym.startLine);
@@ -127,7 +127,7 @@ const finder = new Finder(editor, {
 
 const finderSource: FilterSource<SymbolItem> = {
   mode: "filter",
-  load: async () => loadSymbols(cachedFilePath, cachedLanguage),
+  load: async () => loadSymbols(cachedFilePath, cachedLanguage ?? ""),
   // Filter for callig navigateToSymbol() while typing - live
   // lsp symbols switching/selection.
   filter: (items, query) => {
