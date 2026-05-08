@@ -5,7 +5,6 @@ import {
   flexSpacer,
   hintBar,
   key as widgetKey,
-  list,
   parseHintString,
   raw,
   row,
@@ -13,6 +12,9 @@ import {
   textInput,
   textInputChar,
   toggle,
+  tree,
+  treeNode,
+  type TreeNode,
   type WidgetAction,
   WidgetPanel,
   type WidgetSpec,
@@ -73,6 +75,19 @@ interface PanelState {
   cursorPos: number;
   // Virtual scroll offset for matches tree
   scrollOffset: number;
+  // Per-file expansion state mirrored from the Tree widget's host
+  // instance state. The widget owns expansion (host re-renders on
+  // disclosure click / Right / Left without the plugin reacting);
+  // this set is only read by the plugin's `activate` handler so
+  // Enter on a file row can toggle expansion via
+  // `panel.setExpandedKeys`. Both sets are cleared at the start of
+  // every fresh search.
+  expandedFileKeys: Set<string>;
+  // Memo of file-row keys we've already seen during the current
+  // search. Used by `buildMatchListSpec` to auto-expand newly-
+  // discovered files (default = expanded) without overriding user
+  // collapse state on previously-seen files.
+  knownFileKeys: Set<string>;
   // Widget panel handle. The panel mounts a `Col[Raw{body}, HintBar{hints}]`
   // spec — the body keeps the existing hand-rolled rendering for now,
   // and the footer is built by the host's HintBar widget so its keys are
@@ -273,16 +288,19 @@ interface FlatItem {
   matchIndex?: number;
 }
 
+// Emit every file row + every match row in declaration order. The
+// Tree widget filters out descendants of collapsed nodes at render
+// time — the plugin always sends the full hierarchy. Plugin code
+// that needs to map a `selected_index` back to the underlying match
+// (e.g. `doReplaceScoped`) walks this same flat list.
 function buildFlatItems(): FlatItem[] {
   if (!panel) return [];
   const items: FlatItem[] = [];
   for (let fi = 0; fi < panel.fileGroups.length; fi++) {
-    const group = panel.fileGroups[fi];
     items.push({ type: "file", fileIndex: fi });
-    if (group.expanded) {
-      for (let mi = 0; mi < group.matches.length; mi++) {
-        items.push({ type: "match", fileIndex: fi, matchIndex: mi });
-      }
+    const group = panel.fileGroups[fi];
+    for (let mi = 0; mi < group.matches.length; mi++) {
+      items.push({ type: "match", fileIndex: fi, matchIndex: mi });
     }
   }
   return items;
@@ -428,51 +446,54 @@ function flatItemKey(item: FlatItem): string {
   return `match:${item.fileIndex}/${item.matchIndex}`;
 }
 
-// Render one flat tree item as a single TextPropertyEntry. Selection
-// styling is owned by the List widget — this function never paints
-// the selection bg or a `>` selection prefix; rows always have the
-// same content regardless of selection.
+// Render one flat tree item as a single TextPropertyEntry. The
+// Tree widget owns the indent (depth * 2 spaces) + disclosure glyph
+// (▶ / ▼) prefix and the selection bg — this function emits *just*
+// the row's content starting from byte 0 of the row's body. Files
+// pass `depth: 0, hasChildren: true`; matches pass `depth: 1,
+// hasChildren: false` (see `buildMatchListSpec`).
 function renderFlatItemEntry(item: FlatItem, W: number): TextPropertyEntry {
   if (!panel) return { text: "" };
   if (item.type === "file") {
     const group = panel.fileGroups[item.fileIndex];
-    const expandIcon = group.expanded ? "v" : ">";
     const badge = getFileExtBadge(group.relPath);
     const matchCount = group.matches.length;
     const selectedInFile = group.matches.filter(m => m.selected).length;
-    const fileLineText = ` ${expandIcon} ${badge} ${group.relPath} (${selectedInFile}/${matchCount})`;
+    // The widget prefixes ` ▶ ` / ` ▼ ` (4 cols) before this body;
+    // pad budget = W - 4 (the widget's prefix consumes 4 cols at
+    // depth 0).
+    const fileLineText = `${badge} ${group.relPath} (${selectedInFile}/${matchCount})`;
 
     const overlays: InlineOverlay[] = [];
-    const eiStart = byteLen(" ");
-    const eiEnd = eiStart + byteLen(expandIcon);
-    overlays.push({ start: eiStart, end: eiEnd, style: { fg: C.expandIcon } });
-    const bgStart = eiEnd + byteLen(" ");
-    const bgEnd = bgStart + byteLen(badge);
-    overlays.push({ start: bgStart, end: bgEnd, style: { fg: C.fileIcon, bold: true } });
+    const bgEnd = byteLen(badge);
+    overlays.push({ start: 0, end: bgEnd, style: { fg: C.fileIcon, bold: true } });
     const fpStart = bgEnd + byteLen(" ");
     const fpEnd = fpStart + byteLen(group.relPath);
     overlays.push({ start: fpStart, end: fpEnd, style: { fg: C.filePath } });
 
     return {
-      text: padStr(fileLineText, W),
+      text: padStr(fileLineText, Math.max(0, W - 4)),
       properties: { type: "file-row", fileIndex: item.fileIndex },
       inlineOverlays: overlays,
     };
   }
-  // Match row.
+  // Match row. The Tree widget's prefix at depth=1 is 6 cols
+  // (4 indent + 2 alignment). Use the remaining width for content.
   const group = panel.fileGroups[item.fileIndex];
   const result = group.matches[item.matchIndex!];
   const checkbox = result.selected ? "[v]" : "[ ]";
   const location = `${group.relPath}:${result.match.line}`;
   const context = result.match.context.trim();
-  // No `>` selection prefix — the List widget owns selection bg.
-  const prefixText = `     ${checkbox} `;
-  const maxCtx = W - charLen(prefixText) - charLen(location) - 3;
+  // Body starts at column 0 of the row (host indents); leading
+  // spaces here pad the checkbox a touch off the prefix.
+  const prefixText = `${checkbox} `;
+  const innerWidth = Math.max(0, W - 6); // host prefix consumes 6 cols
+  const maxCtx = innerWidth - charLen(prefixText) - charLen(location) - 3;
   const displayCtx = truncate(context, Math.max(10, maxCtx));
   const matchLineText = `${prefixText}${location} - ${displayCtx}`;
 
   const inlines: InlineOverlay[] = [];
-  const cbStart = byteLen("     ");
+  const cbStart = 0;
   const cbEnd = cbStart + byteLen(checkbox);
   inlines.push({ start: cbStart, end: cbEnd, style: { fg: result.selected ? C.checkOn : C.checkOff } });
   const locStart = cbEnd + byteLen(" ");
@@ -485,16 +506,18 @@ function renderFlatItemEntry(item: FlatItem, W: number): TextPropertyEntry {
   }
 
   return {
-    text: padStr(matchLineText, W),
+    text: padStr(matchLineText, innerWidth),
     properties: { type: "match-row", fileIndex: item.fileIndex, matchIndex: item.matchIndex },
     inlineOverlays: inlines.length > 0 ? inlines : undefined,
   };
 }
 
-// Build the typed spec for the matches body — either a List widget
+// Build the typed spec for the matches body — either a Tree widget
 // (when there are matches) or a Raw cell with the empty/prompt
-// message. The List owns scroll, selection styling, and click
-// routing; the plugin only supplies the items + selectedIndex.
+// message. The Tree widget owns scroll, selection styling, click
+// routing, and host-managed expand/collapse — the plugin sends
+// the *full* hierarchy on every render and the host filters
+// children of collapsed file rows.
 function buildMatchListSpec(): WidgetSpec {
   if (!panel) return col();
   const W = Math.max(MIN_WIDTH, panel.viewportWidth - 2);
@@ -516,21 +539,42 @@ function buildMatchListSpec(): WidgetSpec {
   }
 
   const flatItems = buildFlatItems();
-  const items = flatItems.map(item => renderFlatItemEntry(item, W));
   const itemKeys = flatItems.map(flatItemKey);
+  // Track the file-row keys present in this render. Newly-discovered
+  // file groups are auto-added to `expandedFileKeys` (default state =
+  // expanded). Files the user has collapsed remain absent from the
+  // set; we never re-add a key that's already known but currently
+  // collapsed, since `clearedThisRender` would tag them as "first
+  // time seen". Tracking is via the per-search reset in
+  // `performSearch`: at the start of a search the set is empty, so
+  // every file is auto-added on its first appearance, then user
+  // collapse events remove them.
+  const nodes: TreeNode[] = flatItems.map((item, i) => {
+    const entry = renderFlatItemEntry(item, W);
+    if (item.type === "file") {
+      const k = itemKeys[i];
+      if (!panel!.knownFileKeys.has(k)) {
+        panel!.knownFileKeys.add(k);
+        panel!.expandedFileKeys.add(k);
+      }
+      return treeNode(entry, { depth: 0, hasChildren: true });
+    }
+    return treeNode(entry, { depth: 1, hasChildren: false });
+  });
   const selectedIndex = panel.focusPanel === "matches" ? panel.matchIndex : -1;
-  // List visible rows = panel viewport height minus the chrome
+  // Tree visible rows = panel viewport height minus the chrome
   // (line 1 + options row + separator + footer = 4 rows) — same
-  // calculation that previously sized `treeVisibleRows`.
+  // calculation that sized the previous List.
   const fixedRows = 5;
   const visibleRows = Math.max(3, getViewportHeight() - fixedRows);
 
-  return list({
-    items,
+  return tree({
+    nodes,
     itemKeys,
     selectedIndex,
     visibleRows,
-    key: "matchList",
+    expandedKeys: [...panel.expandedFileKeys],
+    key: "matchTree",
   });
 }
 
@@ -727,6 +771,20 @@ function updatePanelContent(): void {
       hintBar(buildHelpHints()),
     ),
   );
+  // The Tree's `expandedKeys` field on the spec is initial-only —
+  // `mountWidgetPanel` seeds the host's instance state, and
+  // `updateWidgetPanel` ignores it (instance state is authoritative
+  // after first render). So we push expansion changes through the
+  // explicit mutator on every update; this covers the case where
+  // a new file group enters the result set in a later search and
+  // needs to be force-expanded by default. The mutator is a no-op
+  // when the tree isn't mounted yet (first `set()` call).
+  if (panel.searchPattern && panel.searchResults.length > 0) {
+    panel.widgetPanel.setExpandedKeys(
+      "matchTree",
+      [...panel.expandedFileKeys],
+    );
+  }
 }
 
 // =============================================================================
@@ -745,6 +803,12 @@ async function performSearch(pattern: string, silent?: boolean): Promise<SearchR
   if (!panel) return [];
 
   const generation = ++currentSearchGeneration;
+  // Each fresh search resets the per-file expansion set: previous
+  // results may have included files that don't appear in the new
+  // result set, and the user's collapse state for the *previous*
+  // result set isn't meaningful for the new one.
+  panel.expandedFileKeys.clear();
+  panel.knownFileKeys.clear();
   let lastUiUpdate = Date.now();
   const UI_UPDATE_INTERVAL_MS = 100; // Force maximum 10 UI updates per second
 
@@ -859,6 +923,8 @@ async function openPanel(): Promise<void> {
     truncated: false,
     cursorPos: prefill.length,
     scrollOffset: 0,
+    expandedFileKeys: new Set<string>(),
+    knownFileKeys: new Set<string>(),
     widgetPanel: null,
   };
 
@@ -1010,7 +1076,7 @@ registerHandler("search_replace_nav_down",  () => dispatch(widgetKey("Down")));
 
 // Tab / Shift+Tab now cycle focus through the host's tabbable
 // widget set (declared in spec via `key`s — searchField,
-// replaceField, case, regex, whole, replaceAll, matchList).
+// replaceField, case, regex, whole, replaceAll, matchTree).
 // The host re-renders with focus styling on the new widget; the
 // plugin needn't track focusPanel/queryField/optionIndex anymore
 // (the legacy fields linger in PanelState until the rest of the
@@ -1018,11 +1084,11 @@ registerHandler("search_replace_nav_down",  () => dispatch(widgetKey("Down")));
 registerHandler("search_replace_tab",       () => dispatch(widgetKey("Tab")));
 registerHandler("search_replace_shift_tab", () => dispatch(widgetKey("Shift+Tab")));
 
-// Legacy nav_left / nav_right (which doubled as Tree expand/collapse
-// when focused on the matchList) is gone — Left/Right now route via
-// the widget runtime as TextInput cursor moves. File-row expand/
-// collapse is a Tree-widget feature; List doesn't have it in v1.
-// Track this regression in the migration plan.
+// Left/Right route through the smart-key dispatcher: the host
+// expands/collapses Tree nodes (when the matchTree is focused) or
+// moves the TextInput cursor (when a search/replace field is
+// focused). Plugin no longer needs separate file-row expand
+// handling.
 
 // Global option toggles (Alt+C, Alt+R, Alt+W)
 function search_replace_toggle_case(): void {
@@ -1067,8 +1133,11 @@ registerHandler("search_replace_replace_scoped", search_replace_replace_scoped);
 // each does based on the focused widget kind:
 //   * Toggle (case/regex/whole) → fires `widget_event` "toggle".
 //   * Button (replaceAll)       → fires `widget_event` "activate".
-//   * List   (matchList)        → fires `widget_event` "activate"
+//   * Tree   (matchTree)        → fires `widget_event` "activate"
 //                                  with the focused row's index/key.
+//                                  Plugin handler opens the match
+//                                  for leaf rows or toggles
+//                                  expansion for file rows.
 //   * TextInput + Space         → inserts " " (fires "change").
 //   * TextInput + Enter         → no-op (plugin can still bind a
 //                                  separate handler if it wants
@@ -1258,9 +1327,9 @@ editor.on("widget_event", (args) => {
     return;
   }
 
-  // `select` — fired when the user clicks a List row or the host
+  // `select` — fired when the user clicks a Tree row or the host
   // moves selection (Up/Down). The host already updated the
-  // List's selectedIndex in instance state; mirror it into the
+  // tree's selectedIndex in instance state; mirror it into the
   // plugin model and skip re-emit.
   if (args.event_type === "select") {
     const idx = (args.payload as { index?: number } | undefined)?.index;
@@ -1270,25 +1339,48 @@ editor.on("widget_event", (args) => {
     return;
   }
 
-  // `activate` — fired by Enter/Space on a focused Button or List.
-  // For the Replace All button: run replace. For the matchList:
-  // open the focused match's source location (file rows toggle
-  // their expanded state in the model — Tree-widget territory).
+  // `expand` — fired when the host changes a Tree node's
+  // expansion state (Right/Left key, or click on the disclosure
+  // glyph). Mirror the change into our local set so a subsequent
+  // file-row Enter (which goes through `setExpandedKeys`) reads
+  // the right state.
+  if (args.event_type === "expand") {
+    const payload = args.payload as
+      | { key?: string; expanded?: boolean }
+      | undefined;
+    if (typeof payload?.key === "string" && typeof payload.expanded === "boolean") {
+      if (payload.expanded) panel.expandedFileKeys.add(payload.key);
+      else panel.expandedFileKeys.delete(payload.key);
+    }
+    return;
+  }
+
+  // `activate` — fired by Enter/Space on a focused Button or Tree.
+  // For the Replace All button: run replace. For the matchTree:
+  // open the focused match's source location, or toggle expansion
+  // for file rows (so Enter is a shortcut for Right/Left/click).
   if (args.event_type === "activate") {
     if (args.widget_key === "replaceAll") {
       doReplaceAll();
       return;
     }
-    if (args.widget_key === "matchList") {
+    if (args.widget_key === "matchTree") {
       const idx = (args.payload as { index?: number } | undefined)?.index;
       if (typeof idx !== "number") return;
       const flat = buildFlatItems();
       const item = flat[idx];
       if (!item) return;
       if (item.type === "file") {
-        panel.fileGroups[item.fileIndex].expanded =
-          !panel.fileGroups[item.fileIndex].expanded;
-        updatePanelContent();
+        const k = `file:${item.fileIndex}`;
+        if (panel.expandedFileKeys.has(k)) {
+          panel.expandedFileKeys.delete(k);
+        } else {
+          panel.expandedFileKeys.add(k);
+        }
+        panel.widgetPanel?.setExpandedKeys(
+          "matchTree",
+          [...panel.expandedFileKeys],
+        );
       } else {
         const group = panel.fileGroups[item.fileIndex];
         const result = group.matches[item.matchIndex!];
