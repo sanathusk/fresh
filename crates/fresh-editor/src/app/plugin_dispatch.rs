@@ -3538,6 +3538,14 @@ impl Editor {
                 Some(fresh_core::api::WidgetSpec::Tree { .. }) => {
                     self.fire_tree_activate(panel_id, &focus_key);
                 }
+                Some(fresh_core::api::WidgetSpec::TextInput { .. }) => {
+                    // Form-like UX: pressing Enter on a single-line text
+                    // input commits the field and moves to the next
+                    // tabbable widget. Plugins that want a different
+                    // Enter binding can intercept the key before
+                    // dispatching it through the smart-key router.
+                    self.handle_widget_focus_advance(panel_id, 1);
+                }
                 _ => {}
             },
             "Space" => match widget {

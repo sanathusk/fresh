@@ -1491,16 +1491,18 @@ pub enum WidgetAction {
     ///
     /// Dispatch table:
     ///
-    /// | Key                                   | TextInput   | Toggle / Button | List       | (no focus) |
-    /// |---------------------------------------|-------------|-----------------|------------|------------|
-    /// | `Tab`                                 | focus +1    | focus +1        | focus +1   | no-op      |
-    /// | `Shift+Tab`                           | focus -1    | focus -1        | focus -1   | no-op      |
-    /// | `Backspace` / `Delete` / `Left` / `Right` / `Home` / `End` | text-edit | no-op | no-op | no-op |
-    /// | `Up`                                  | no-op       | no-op           | select -1  | no-op      |
-    /// | `Down`                                | no-op       | no-op           | select +1  | no-op      |
-    /// | `Enter`                               | no-op       | activate        | activate   | no-op      |
-    /// | `Space`                               | char " "    | activate        | activate   | no-op      |
-    /// | (anything else)                       | no-op       | no-op           | no-op      | no-op      |
+    /// | Key                                   | TextInput   | Toggle / Button | List       | Tree                | (no focus) |
+    /// |---------------------------------------|-------------|-----------------|------------|---------------------|------------|
+    /// | `Tab`                                 | focus +1    | focus +1        | focus +1   | focus +1            | no-op      |
+    /// | `Shift+Tab`                           | focus -1    | focus -1        | focus -1   | focus -1            | no-op      |
+    /// | `Backspace` / `Delete` / `Home` / `End` | text-edit | no-op           | no-op      | no-op               | no-op      |
+    /// | `Left`                                | text-edit   | no-op           | no-op      | collapse / parent   | no-op      |
+    /// | `Right`                               | text-edit   | no-op           | no-op      | expand              | no-op      |
+    /// | `Up`                                  | no-op       | no-op           | select -1  | select -1 (visible) | no-op      |
+    /// | `Down`                                | no-op       | no-op           | select +1  | select +1 (visible) | no-op      |
+    /// | `Enter`                               | focus +1    | activate        | activate   | activate            | no-op      |
+    /// | `Space`                               | char " "    | activate        | activate   | activate            | no-op      |
+    /// | (anything else)                       | no-op       | no-op           | no-op      | no-op               | no-op      |
     ///
     /// "no-op" still returns successfully — plugins can rely on the
     /// command not erroring when the focused widget can't handle the
