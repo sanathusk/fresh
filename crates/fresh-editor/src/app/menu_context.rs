@@ -65,9 +65,9 @@ impl Editor {
         // or in the editor only when no file is in the clipboard. There's no
         // buffer to paste into in placeholder mode, so suppress it there.
         let can_paste = if file_explorer_focused {
-            self.file_explorer_clipboard.is_some()
+            self.active_window().file_explorer_clipboard.is_some()
         } else {
-            has_buffer && self.file_explorer_clipboard.is_none()
+            has_buffer && self.active_window().file_explorer_clipboard.is_none()
         };
         let menu_bar = self.active_window_mut().menu_bar_visible;
         let vertical_scrollbar = self.config.editor.show_vertical_scrollbar;

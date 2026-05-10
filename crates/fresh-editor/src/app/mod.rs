@@ -553,7 +553,7 @@ pub struct Editor {
     // file-explorer view itself was already per-window since Step 0b;
     // these chrome flags follow.
     /// File explorer clipboard for cut/copy/paste of files and directories
-    pub(crate) file_explorer_clipboard: Option<crate::app::file_explorer::FileExplorerClipboard>,
+    // `file_explorer_clipboard` moved onto `Window`.
 
     // `menu_bar_visible`, `menu_bar_auto_shown`, `tab_bar_visible`,
     // `status_bar_visible`, `prompt_line_visible`, `mouse_enabled`

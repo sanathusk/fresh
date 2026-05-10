@@ -1010,10 +1010,10 @@ impl Editor {
         // the clipboard stayed primed, so the next Ctrl+V in the explorer
         // would silently move a file the user had effectively "forgotten".
         if matches!(
-            self.file_explorer_clipboard,
+            self.active_window().file_explorer_clipboard,
             Some(FileExplorerClipboard { is_cut: true, .. })
         ) {
-            self.file_explorer_clipboard = None;
+            self.active_window_mut().file_explorer_clipboard = None;
             self.set_status_message(t!("explorer.cut_cancelled").to_string());
             return;
         }
@@ -1093,7 +1093,7 @@ impl Editor {
     }
 
     pub fn file_explorer_clipboard(&self) -> Option<&FileExplorerClipboard> {
-        self.file_explorer_clipboard.as_ref()
+        self.active_window().file_explorer_clipboard.as_ref()
     }
 
     pub fn file_explorer_copy(&mut self) {
@@ -1143,12 +1143,13 @@ impl Editor {
                 t!("explorer.copied_n", count = count).to_string()
             }
         };
-        self.file_explorer_clipboard = Some(FileExplorerClipboard { paths, is_cut });
+        self.active_window_mut().file_explorer_clipboard =
+            Some(FileExplorerClipboard { paths, is_cut });
         self.set_status_message(msg);
     }
 
     pub fn file_explorer_paste(&mut self) {
-        let clipboard = match self.file_explorer_clipboard.clone() {
+        let clipboard = match self.active_window().file_explorer_clipboard.clone() {
             Some(c) => c,
             None => {
                 self.set_status_message(t!("explorer.paste_no_source").to_string());
@@ -1186,7 +1187,7 @@ impl Editor {
                     // mind": treat it as a cancel rather than surfacing a
                     // scary error. Must clear the clipboard, otherwise a
                     // later paste elsewhere would silently move the file.
-                    self.file_explorer_clipboard = None;
+                    self.active_window_mut().file_explorer_clipboard = None;
                     self.set_status_message(t!("explorer.cut_cancelled").to_string());
                     return;
                 } else {
@@ -1249,7 +1250,7 @@ impl Editor {
                 // single-path branch above). Clear the clipboard so a
                 // later paste can't silently move the files after all.
                 if is_cut {
-                    self.file_explorer_clipboard = None;
+                    self.active_window_mut().file_explorer_clipboard = None;
                     self.set_status_message(t!("explorer.cut_cancelled").to_string());
                 } else {
                     self.set_status_message(t!("explorer.paste_same_location").to_string());
@@ -1404,7 +1405,7 @@ impl Editor {
         // source is still sitting at its original location the user may
         // want to retry, and the clipboard still contains the right path.
         if is_cut && first_error.is_none() && partial_moves.is_empty() {
-            self.file_explorer_clipboard = None;
+            self.active_window_mut().file_explorer_clipboard = None;
         }
         self.active_window_mut().key_context = KeyContext::FileExplorer;
     }
@@ -1597,7 +1598,7 @@ impl Editor {
                 }
                 self.refresh_tree_after_paste(&src, &dst, is_cut);
                 if is_cut {
-                    self.file_explorer_clipboard = None;
+                    self.active_window_mut().file_explorer_clipboard = None;
                     self.set_status_message(t!("explorer.pasted_moved", name = &name).to_string());
                 } else {
                     self.set_status_message(t!("explorer.pasted", name = &name).to_string());

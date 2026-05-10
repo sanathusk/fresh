@@ -318,7 +318,7 @@ impl Editor {
 
                 let keybindings = self.keybindings.read().unwrap();
                 let empty: Vec<std::path::PathBuf> = Vec::new();
-                let cut_paths = self
+                let cut_paths = __win
                     .file_explorer_clipboard
                     .as_ref()
                     .filter(|cb| cb.is_cut)

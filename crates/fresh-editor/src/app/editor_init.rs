@@ -237,7 +237,6 @@ impl Editor {
             mode_registry: ModeRegistry::new(),
             pending_authority: None,
             remote_indicator_override: None,
-            file_explorer_clipboard: None,
             menus: crate::config::MenuConfig::translated(),
             chrome_layout: ChromeLayout::default(),
             background_process_handles: HashMap::new(),

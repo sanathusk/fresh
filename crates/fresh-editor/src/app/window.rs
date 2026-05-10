@@ -676,6 +676,11 @@ pub struct Window {
     /// Plugin error log (populated when plugin status messages match
     /// error patterns; tests assert against this).
     pub plugin_errors: Vec<String>,
+
+    /// Cut/copy clipboard for file-explorer ops in this window. Each
+    /// window has its own paste buffer; cross-window file ops would
+    /// require a separately-shared clipboard.
+    pub file_explorer_clipboard: Option<crate::app::file_explorer::FileExplorerClipboard>,
 }
 
 impl Window {
@@ -1581,6 +1586,7 @@ impl Window {
             search_overlay_top_byte: None,
             animations: crate::view::animation::AnimationRunner::default(),
             plugin_errors: Vec::new(),
+            file_explorer_clipboard: None,
             resources,
         }
     }
