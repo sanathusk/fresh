@@ -1447,6 +1447,13 @@ impl Window {
                 .map(str::to_owned)
                 .unwrap_or_else(|| "main".to_owned());
         }
+        // Seed every poll/throttle timestamp with the *editor's* time
+        // source rather than real wall-clock — otherwise tests using
+        // `TestTimeSource::advance` see a misaligned baseline and
+        // `elapsed_since` returns less than the configured interval
+        // (broke auto-save / auto-recovery tests after these fields
+        // moved off `Editor`).
+        let now = resources.time_source.now();
         Self {
             id,
             label,
@@ -1556,8 +1563,8 @@ impl Window {
             stored_diagnostics: Arc::new(HashMap::new()),
             stored_folding_ranges: Arc::new(HashMap::new()),
             dir_mod_times: HashMap::new(),
-            last_auto_revert_poll: std::time::Instant::now(),
-            last_file_tree_poll: std::time::Instant::now(),
+            last_auto_revert_poll: now,
+            last_file_tree_poll: now,
             git_index_resolved: false,
             pending_file_poll_rx: None,
             pending_dir_poll_rx: None,
@@ -1577,8 +1584,8 @@ impl Window {
             tab_bar_visible: resources.config.editor.show_tab_bar,
             status_bar_visible: resources.config.editor.show_status_bar,
             prompt_line_visible: resources.config.editor.show_prompt_line,
-            last_auto_recovery_save: std::time::Instant::now(),
-            last_persistent_auto_save: std::time::Instant::now(),
+            last_auto_recovery_save: now,
+            last_persistent_auto_save: now,
             warning_domains: crate::app::warning_domains::WarningDomainRegistry::default(),
             tab_context_menu: None,
             file_explorer_context_menu: None,
