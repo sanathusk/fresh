@@ -1743,7 +1743,27 @@ impl Window {
         let outer_buf = mgr
             .active_buffer_id()
             .expect("Editor always has at least one buffer");
-        (active_split, outer_buf)
+        // Validate against `self.buffers` — the group-tab branch above
+        // already does this for its return; the outer fallback used to
+        // skip the check and any caller that then did
+        // `self.buffers.get(&active_buf).unwrap()` would panic. Issue
+        // #1939: `set_pane_buffer` writes the leaf's `buffer_id` +
+        // `vs.active_buffer` without touching `vs.open_buffers`, so
+        // `clean_orphaned_buffers` (which filters by `buffer_tab_ids`)
+        // can remove a buffer the split manager still points at.
+        // When that happens, fall back to any live buffer. The split
+        // manager pointer is stale until something repairs it, but
+        // render no longer crashes at the status-bar `.unwrap()`.
+        if self.buffers.contains_key(&outer_buf) {
+            (active_split, outer_buf)
+        } else if let Some(&any) = self.buffers.keys().next() {
+            (active_split, any)
+        } else {
+            // `self.buffers` empty: a bigger invariant violation than
+            // this helper can recover from. Preserve old behaviour so
+            // the panic surfaces at the next `.unwrap()` site.
+            (active_split, outer_buf)
+        }
     }
 
     /// The id of the buffer currently focused in this window.

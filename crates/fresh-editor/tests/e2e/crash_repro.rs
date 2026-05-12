@@ -905,33 +905,53 @@ fn test_review_diff_empty_repo_then_type_does_not_panic() {
 ///
 /// This test puts the editor into that state directly (remove the
 /// active buffer from `window.buffers` while leaving the split manager's
-/// pointer untouched) and calls `render()`. Marked `#[should_panic]`
-/// because the bug is **not fixed at HEAD**: the test demonstrates that
-/// the panic still reproduces. Once `effective_active_pair`'s fallback
-/// is hardened to validate the id (or callers learn to keep the two
-/// maps in lock-step), drop `#[should_panic]` and the inverted message.
+/// pointer untouched) and renders. The fix hardens
+/// `effective_active_pair`'s outer fallback to validate the returned id
+/// against `self.buffers` and substitute any live buffer when the
+/// pointer is stale, mirroring the validation the group-tab branch
+/// already does.
 #[test]
-#[should_panic(expected = "called `Option::unwrap()` on a `None` value")]
 fn test_issue_1939_active_buffer_id_missing_from_window_buffers() {
     let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
 
-    // The seed scratch buffer is active at boot; the split manager's
-    // active leaf points at its id. Removing it from `window.buffers`
-    // leaves the split manager unchanged — exactly the inconsistency
-    // `effective_active_pair`'s fallback can't tolerate.
-    let active_buf = harness.editor().active_buffer();
+    // Mint a second buffer so the window has somewhere to fall back to
+    // after we orphan the split manager's pointer. (Production hits
+    // this only when other buffers exist — the orphan-cleanup that
+    // creates the inconsistency in the first place runs *because*
+    // other live buffers are around.)
+    let fallback_buf = harness.editor_mut().new_buffer();
+
+    // Point the active leaf at `fallback_buf`, then remove it from
+    // `window.buffers`. `set_pane_buffer` writes the leaf's `buffer_id`
+    // and `vs.active_buffer` but not `vs.open_buffers`, so removing
+    // the buffer without touching the split manager mirrors what
+    // `clean_orphaned_buffers` can do in production.
+    let active_leaf = harness
+        .editor()
+        .active_window()
+        .splits
+        .as_ref()
+        .unwrap()
+        .0
+        .active_split();
+    harness
+        .editor_mut()
+        .active_window_mut()
+        .set_pane_buffer(active_leaf, fallback_buf);
     let removed = harness
         .editor_mut()
         .active_window_mut()
         .buffers
-        .remove(&active_buf);
+        .remove(&fallback_buf);
     assert!(
         removed.is_some(),
-        "precondition: active buffer must have been in window.buffers"
+        "precondition: fallback buffer must have been in window.buffers"
     );
 
-    // The render panics at `__win.buffers.get_mut(&active_buf).unwrap()`
-    // (HEAD: render.rs:1039) — the same `.unwrap()` site reported as
+    // Before the fix this panicked at `__win.buffers.get_mut(&active_buf).unwrap()`
+    // (HEAD: render.rs:1039), the same `.unwrap()` site reported as
     // render.rs:841:58 at v0.3.4.
-    let _ = harness.render();
+    harness
+        .render()
+        .expect("render must not panic when the split manager's active buffer is stale");
 }
