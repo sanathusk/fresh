@@ -194,7 +194,7 @@ pub(crate) fn render_view_lines(input: LineRenderInput<'_>) -> LineRenderOutput 
     // only when the active set actually changes. `next_overlay_in_pos`
     // advances through `overlay_position_index` (sorted by `range.start`),
     // letting us find newly-entering overlays without rescanning.
-    let mut active: Vec<(usize, &Overlay)> = Vec::new();
+    let mut active: Vec<(usize, usize, &Overlay)> = Vec::new();
     let mut active_refs: Vec<&Overlay> = Vec::new();
     let mut next_overlay_in_pos: usize = 0;
     let mut last_active_bp: Option<usize> = None;
@@ -434,6 +434,12 @@ pub(crate) fn render_view_lines(input: LineRenderInput<'_>) -> LineRenderOutput 
         let mut first_line_byte_pos: Option<usize> = None;
         let mut last_line_byte_pos: Option<usize> = None;
         line_touched_overlays.clear();
+        // Overlays still active from a previous visual row of the same
+        // wrapped source line span into this row's bytes too — seed
+        // `line_touched_overlays` with them so the extend_to_line_end
+        // fill paints the trailing whitespace on continuation rows, not
+        // just the row where the overlay first activated.
+        line_touched_overlays.extend(active.iter().map(|(_, idx, _)| *idx));
 
         let chars_iterator = line_content.chars().peekable();
         for ch in chars_iterator {
@@ -458,8 +464,8 @@ pub(crate) fn render_view_lines(input: LineRenderInput<'_>) -> LineRenderOutput 
             if let Some(bp) = byte_pos {
                 if last_active_bp != Some(bp) {
                     let mut dirty = false;
-                    if active.iter().any(|(end, _)| *end <= bp) {
-                        active.retain(|(end, _)| *end > bp);
+                    if active.iter().any(|(end, _, _)| *end <= bp) {
+                        active.retain(|(end, _, _)| *end > bp);
                         dirty = true;
                     }
                     while next_overlay_in_pos < overlay_position_index.len() {
@@ -476,9 +482,9 @@ pub(crate) fn render_view_lines(input: LineRenderInput<'_>) -> LineRenderOutput 
                             let pri = overlay.priority;
                             let pos = active
                                 .iter()
-                                .position(|(_, o)| o.priority > pri)
+                                .position(|(_, _, o)| o.priority > pri)
                                 .unwrap_or(active.len());
-                            active.insert(pos, (range.end, overlay));
+                            active.insert(pos, (range.end, idx, overlay));
                             dirty = true;
                             // Record for extend_to_line_end consideration.
                             // `line_touched_overlays` is typically small,
@@ -491,7 +497,7 @@ pub(crate) fn render_view_lines(input: LineRenderInput<'_>) -> LineRenderOutput 
                     }
                     if dirty {
                         active_refs.clear();
-                        active_refs.extend(active.iter().map(|(_, o)| *o));
+                        active_refs.extend(active.iter().map(|(_, _, o)| *o));
                     }
                     last_active_bp = Some(bp);
                 }
@@ -1101,17 +1107,9 @@ pub(crate) fn render_view_lines(input: LineRenderInput<'_>) -> LineRenderOutput 
         }
 
         // Fill remaining width for overlays with extend_to_line_end.
-        //
-        // Was gated on `!line_wrap` because side-by-side diffs ran with
-        // wrap off; under the default config (`line_wrap = true`) the
-        // gate also suppressed fill for non-wrapping lines, breaking
-        // plugins like live-diff that expect a full-row stripe on
-        // changed lines. The cursor-line bg fill below already runs
-        // unconditionally; aligning extend_to_line_end with it. For
-        // source lines that visually wrap to multiple rows, the fill
-        // applies to the last visual row only — earlier rows stay
-        // bg-default until the wrap loop is taught to emit per-row
-        // fills.
+        // Runs per visual row; `line_touched_overlays` is seeded from
+        // `active` at row start so wrap continuations of a source-line-
+        // wide overlay still see it.
         {
             // Calculate the content area width (total width minus gutter)
             let content_width = render_area.width.saturating_sub(gutter_width as u16) as usize;
