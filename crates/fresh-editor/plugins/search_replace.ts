@@ -159,6 +159,25 @@ function historyPush(pattern: string): void {
   }
 }
 
+// "Has the user settled on this query?" lives on a separate timer
+// from the 150ms search debounce. Pushing to history on every
+// debounce tick captures intermediate prefixes (typing "foo bar"
+// in fits and starts → "f", "fo", "foo", … all end up in history).
+// Wait 2 seconds of pattern-stability before pushing; any change
+// cancels the pending push.
+const HISTORY_SETTLE_MS = 2000;
+let historySettleGeneration = 0;
+function scheduleHistoryPush(pattern: string): void {
+  if (!pattern) return;
+  const gen = ++historySettleGeneration;
+  editor.delay(HISTORY_SETTLE_MS).then(() => {
+    if (gen !== historySettleGeneration) return;
+    if (!panel || panel.searchPattern !== pattern) return;
+    if (historyIndex >= 0) return; // walking history; not user input
+    historyPush(pattern);
+  });
+}
+
 // =============================================================================
 // Colors
 // =============================================================================
@@ -1207,12 +1226,6 @@ async function rerunSearch(): Promise<void> {
   // search completes and flip busy=true behind the user's back (would
   // race with the next Alt+Ret). See §3 / §17.
   searchDebounceGeneration++;
-  // Record the pattern in history — unless we're currently walking
-  // history (the active entry is already there at index historyIndex
-  // and pushing would shuffle indices). See §11.
-  if (historyIndex < 0) {
-    historyPush(panel.searchPattern);
-  }
   panel.truncated = false;
   panel.busy = true;
   panel.matchIndex = 0;
@@ -1415,6 +1428,10 @@ async function doReplaceAll(): Promise<void> {
     editor.setStatus(editor.t("status.no_items_selected"));
     return;
   }
+  // The user committed to this pattern by triggering Replace All —
+  // a clear "settle" signal, so commit it to history now even if the
+  // 2s scheduleHistoryPush hasn't fired yet.
+  if (historyIndex < 0) historyPush(panel.searchPattern);
   // Confirm before applying.  Replacements write to disk immediately; Undo
   // only covers files that remain open in this session (see bug #1 report).
   const fileCount = new Set(selected.map(r => r.match.file)).size;
@@ -1458,6 +1475,8 @@ async function doReplaceScoped(): Promise<void> {
     const result = panel.fileGroups[item.fileIndex].matches[item.matchIndex!];
     if (result.selected) toReplace = [result];
   }
+  // Same as doReplaceAll: explicit commit, push immediately.
+  if (historyIndex < 0) historyPush(panel.searchPattern);
 
   if (toReplace.length === 0) {
     editor.setStatus(editor.t("status.no_selected"));
@@ -1491,6 +1510,18 @@ async function doReplaceScoped(): Promise<void> {
 
 function search_replace_close(): void {
   if (!panel) return;
+  // If the user actually ran a search to completion with this
+  // pattern (results were observed) and isn't walking history,
+  // treat panel-close as a settle and commit to history. The
+  // searchPerformed guard avoids capturing half-typed patterns
+  // that never made it past the empty-state.
+  if (
+    historyIndex < 0
+    && panel.searchPattern
+    && panel.searchPerformed
+  ) {
+    historyPush(panel.searchPattern);
+  }
   const sourceSplitId = panel.sourceSplitId;
   panel.widgetPanel?.unmount();
   editor.closeBuffer(panel.resultsBufferId);
@@ -1611,21 +1642,17 @@ editor.on("widget_event", (args) => {
         // the cursor. See §11.
         historyIndex = -1;
         historySavedPattern = null;
-        // We're rendering more than just the typing-fast-path because
-        // the matches-list empty-state branch now depends on the
-        // (searchPattern, searchPerformed, busy, totalMatches) tuple.
-        // The buildSpec path below in updatePanelContent re-emits the
-        // matches Raw; without this rebuild the user would still see
-        // a stale "No matches" placeholder until the next render.
         panel.searchPattern = payload.value;
         panel.cursorPos = byteToCharOffset(payload.value, cursorByte);
         updatePanelContent();
         rerunSearchDebounced();
+        scheduleHistoryPush(payload.value);
         return;
       }
       panel.searchPattern = payload.value;
       panel.cursorPos = byteToCharOffset(payload.value, cursorByte);
       rerunSearchDebounced();
+      scheduleHistoryPush(payload.value);
     } else if (args.widget_key === "replaceField") {
       panel.replaceText = payload.value;
       panel.cursorPos = byteToCharOffset(payload.value, cursorByte);
@@ -1688,6 +1715,10 @@ editor.on("widget_event", (args) => {
           [...panel.expandedFileKeys],
         );
       } else {
+        // Opening a result is a "this is the search I wanted" signal —
+        // commit it to history immediately, regardless of how long
+        // the pattern has been stable. See §11 follow-up.
+        if (historyIndex < 0) historyPush(panel.searchPattern);
         const group = panel.fileGroups[item.fileIndex];
         const result = group.matches[item.matchIndex!];
         editor.openFileInSplit(
