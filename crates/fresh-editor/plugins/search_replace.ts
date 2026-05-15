@@ -1915,10 +1915,12 @@ editor.on("widget_event", (args) => {
         scheduleHistoryPush(payload.value);
         return;
       }
-      panel.searchPattern = payload.value;
+      // Cursor-only update (Left/Right arrows, Home/End, click reposition):
+      // the search field's text is unchanged, so don't re-run the search
+      // or perturb the history-settle timer. Just sync the plugin's
+      // cached cursor position so the next render shows the cursor in
+      // the right place.
       panel.cursorPos = byteToCharOffset(payload.value, cursorByte);
-      rerunSearchDebounced();
-      scheduleHistoryPush(payload.value);
     } else if (args.widget_key === "replaceField") {
       panel.replaceText = payload.value;
       panel.cursorPos = byteToCharOffset(payload.value, cursorByte);
