@@ -1690,13 +1690,25 @@ impl Editor {
         self.resolve_json_callback(request_id, result);
     }
 
-    /// Open `path` as a regular buffer in forced large-file (file-backed)
-    /// mode. The file is created (empty) if missing — designed for buffers
-    /// that will be filled by a concurrent `spawnProcess` with `stdoutTo`.
-    /// Resolves the request with the new buffer's id.
+    /// Open `path` as a regular buffer for plugin-driven streaming
+    /// display. The file is created (empty) if missing.
+    ///
+    /// Routes through the same `open_file_no_focus` orchestrator that
+    /// `editor.openFile` uses, so the buffer gets the full setup
+    /// (encoding/binary detection, language detection, buffer settings,
+    /// margin config, per-split BufferViewState defaults). This is
+    /// critical for things like the scrollbar's visual-row index —
+    /// bypassing this setup and going straight to `BufferData::Unloaded`
+    /// breaks `line_count()` and any code that depends on it.
+    ///
+    /// Designed for buffers that will be filled by a concurrent
+    /// `spawnProcess` with `stdoutTo`. Pair with `RefreshBufferFromDisk`
+    /// to grow the buffer as the file is written; `extend_streaming`
+    /// (called by that path) counts newlines in the appended region
+    /// so the buffer's line index stays correct as it grows.
     fn handle_open_file_streaming(&mut self, path: std::path::PathBuf, request_id: u64) {
-        // Ensure the file exists at 0 bytes if missing, so the loader has
-        // something to point at.
+        // Ensure the file exists at 0 bytes if missing, so the open
+        // path has something to load.
         if !self.authority.filesystem.exists(&path) {
             if let Some(parent) = path.parent() {
                 if !parent.as_os_str().is_empty() {
@@ -1722,53 +1734,49 @@ impl Editor {
             }
         }
 
-        // Build the EditorState using the streaming loader (forces
-        // large-file / file-backed mode regardless of size).
-        let state = match crate::state::EditorState::from_file_streaming(
-            &path,
-            &self.grammar_registry,
-            &self.config.languages,
-            std::sync::Arc::clone(&self.authority.filesystem),
-        ) {
-            Ok(s) => s,
+        // Use the same orchestrator that backs `editor.openFile`. This
+        // ensures the buffer is set up identically to a user-opened
+        // file (settings, language, view-state defaults, line indexing).
+        let buffer_id = match self.open_file_no_focus(&path) {
+            Ok(id) => id,
             Err(e) => {
-                tracing::warn!("openFileStreaming: load failed for {:?}: {}", path, e);
+                tracing::warn!(
+                    "openFileStreaming: open_file_no_focus failed for {:?}: {}",
+                    path,
+                    e
+                );
                 self.resolve_json_callback::<Option<u64>>(request_id, None);
                 return;
             }
         };
 
-        let buffer_id = self.alloc_buffer_id();
-
-        self.windows
+        // Plugin-managed surfaces (typically buffer-group panel
+        // targets) shouldn't show up in quick-switch / tab strip. The
+        // plugin can route the buffer visually via
+        // `setBufferGroupPanelBuffer`; we also drop the auto-added
+        // tab entry that `open_file_no_focus` placed in the active
+        // split.
+        if let Some(meta) = self.active_window_mut().buffer_metadata.get_mut(&buffer_id) {
+            meta.hidden_from_tabs = true;
+        }
+        let active_split = self
+            .windows
+            .get(&self.active_window)
+            .and_then(|w| w.buffers.splits())
+            .map(|(mgr, _)| mgr)
+            .expect("active window must have a populated split layout")
+            .active_split();
+        if let Some(vs) = self
+            .windows
             .get_mut(&self.active_window)
-            .map(|w| &mut w.buffers)
-            .expect("active window present")
-            .insert(buffer_id, state);
-        self.active_window_mut()
-            .event_logs
-            .insert(buffer_id, crate::model::event::EventLog::new());
-
-        // Hidden from tab bars: this buffer is for plugin-driven
-        // display (typically a buffer-group panel target). Plugin
-        // authors don't want every per-item streaming buffer
-        // cluttering quick-switch or the tab strip.
-        let mut metadata = super::types::BufferMetadata::with_file(
-            path.clone(),
-            &path,
-            &self.working_dir,
-            self.authority.path_translation.as_ref(),
-        );
-        metadata.hidden_from_tabs = true;
-        self.active_window_mut()
-            .buffer_metadata
-            .insert(buffer_id, metadata);
-
-        // Do NOT add the buffer to the active split's tab list. The
-        // plugin will route it somewhere visible — typically via
-        // `setBufferGroupPanelBuffer` — and adding it here would
-        // briefly flash a stray tab + steal focus from the user's
-        // current split.
+            .and_then(|w| w.split_view_states_mut())
+            .expect("active window must have a populated split layout")
+            .get_mut(&active_split)
+        {
+            use crate::view::split::TabTarget;
+            vs.open_buffers
+                .retain(|t| !matches!(t, TabTarget::Buffer(b) if *b == buffer_id));
+        }
 
         self.resolve_json_callback(request_id, Some(buffer_id.0));
     }

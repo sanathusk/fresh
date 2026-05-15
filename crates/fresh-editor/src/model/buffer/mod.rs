@@ -410,23 +410,6 @@ impl TextBuffer {
         }
     }
 
-    /// Load a file in forced large-file (file-backed) mode regardless
-    /// of file size. The buffer references `path` via `BufferData::Unloaded`
-    /// and lazy-loads 1 MB chunks on demand. Designed for buffers whose
-    /// backing file will grow under them — pair with `extend_streaming`.
-    ///
-    /// Works for 0-byte files: `load_large_file_internal` already handles
-    /// `file_size == 0` and produces an empty piece tree.
-    pub fn load_from_file_streaming<P: AsRef<Path>>(
-        path: P,
-        fs: Arc<dyn FileSystem + Send + Sync>,
-    ) -> anyhow::Result<Self> {
-        let path = path.as_ref();
-        let metadata = fs.metadata(path)?;
-        let file_size = metadata.size as usize;
-        Self::load_large_file(path, file_size, fs)
-    }
-
     /// Load a text buffer from a file with a specific encoding (no auto-detection).
     pub fn load_from_file_with_encoding<P: AsRef<Path>>(
         path: P,
@@ -1593,8 +1576,20 @@ impl TextBuffer {
     }
 
     /// Extend buffer to include more bytes from a streaming source file.
-    /// Used for stdin streaming where the temp file grows over time.
-    /// Appends a new Unloaded chunk for the new bytes.
+    /// Used for stdin streaming where the temp file grows over time, and
+    /// for plugin streaming via `RefreshBufferFromDisk`.
+    ///
+    /// Counts line feeds in the appended region so the new piece carries
+    /// a real `line_feed_cnt` instead of `None`. Without this, any
+    /// previously-known line count on the existing pieces propagates to
+    /// `line_count() = None` (the piece-tree's `total_line_feeds`
+    /// returns `None` if any piece is unknown), which in turn breaks the
+    /// visual-row index used by the scrollbar.
+    ///
+    /// Falls back to `None` only when the filesystem can't count
+    /// (errored stat / read). The buffer is still usable then — just
+    /// without precise line indexing, same as a large file opened
+    /// without a scan.
     pub fn extend_streaming(&mut self, source_path: &Path, new_size: usize) {
         let old_size = self.total_bytes();
         if new_size <= old_size {
@@ -1615,13 +1610,22 @@ impl TextBuffer {
         );
         self.buffers.push(new_buffer);
 
+        // Count line feeds in the appended region from disk so the
+        // piece carries a known line count. Counting is cheap — it's a
+        // streaming scan of `additional_bytes`, no buffer materialisation.
+        let line_feed_cnt = self
+            .persistence
+            .fs()
+            .count_line_feeds_in_range(source_path, old_size as u64, additional_bytes)
+            .ok();
+
         // Append piece at end of document (insert at offset == total_bytes)
         self.piece_tree.insert(
             old_size,
             BufferLocation::Stored(buffer_id),
             0,
             additional_bytes,
-            None, // line_feed_cnt unknown for unloaded chunk
+            line_feed_cnt,
             &self.buffers,
         );
     }

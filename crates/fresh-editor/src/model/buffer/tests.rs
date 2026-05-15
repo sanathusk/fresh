@@ -6,33 +6,41 @@ fn test_fs() -> Arc<dyn crate::model::filesystem::FileSystem + Send + Sync> {
 }
 use super::*;
 
-/// load_from_file_streaming forces large-file mode even for a 0-byte
-/// file, and extend_streaming grows the buffer to track on-disk writes.
-/// This is the path the new openFileStreaming + refreshBufferFromDisk
-/// plugin APIs are built on.
+/// Open a file via the normal load path (small empty file) then
+/// grow it through `extend_streaming` — the path the
+/// openFileStreaming + refreshBufferFromDisk plugin APIs use.
+/// Verifies that line indexing survives the growth so callers like
+/// the scrollbar's visual-row index see a real `line_count()`.
 #[test]
 fn test_streaming_load_and_extend() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(tmp.path(), b"").unwrap();
 
-    // Open an empty file in streaming mode.
-    let mut buf = TextBuffer::load_from_file_streaming(tmp.path(), test_fs()).unwrap();
+    // Open the empty file via the normal threshold-based loader.
+    // Below the 1 MB threshold this takes the small-file path, which
+    // produces a Loaded buffer with `line_feed_cnt = Some(0)`.
+    let mut buf = TextBuffer::load_from_file(tmp.path(), 0, test_fs()).unwrap();
     assert_eq!(buf.total_bytes(), 0);
+    assert_eq!(buf.line_count(), Some(1)); // empty doc = 1 line
 
-    // Simulate the producer writing some bytes.
+    // Simulate the producer writing some bytes (no newline yet).
     std::fs::write(tmp.path(), b"hello").unwrap();
     buf.extend_streaming(tmp.path(), 5);
     assert_eq!(buf.total_bytes(), 5);
+    // 1 (existing empty line) + 0 new newlines = 1 logical line
+    assert_eq!(buf.line_count(), Some(1));
 
-    // And more bytes — incrementally.
-    std::fs::write(tmp.path(), b"hello, world").unwrap();
+    // Add more bytes — including a newline.
+    std::fs::write(tmp.path(), b"hello\nworld\n").unwrap();
     buf.extend_streaming(tmp.path(), 12);
     assert_eq!(buf.total_bytes(), 12);
+    // The appended region "\nworld\n" contains 2 newlines → 3 lines total.
+    assert_eq!(buf.line_count(), Some(3));
 
     // Reading the full range should see the latest on-disk bytes via
     // lazy chunk loading.
     let text = buf.get_text_range_mut(0, 12).unwrap();
-    assert_eq!(text, b"hello, world");
+    assert_eq!(text, b"hello\nworld\n");
 }
 
 #[test]

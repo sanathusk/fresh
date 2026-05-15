@@ -383,25 +383,6 @@ impl EditorState {
         Ok(state)
     }
 
-    /// Like `from_file_with_languages`, but forces large-file (file-backed)
-    /// mode regardless of file size. Designed for buffers whose backing
-    /// file will grow under them (e.g. `git show` streaming into a temp
-    /// file). Works for 0-byte files.
-    pub fn from_file_streaming(
-        path: &std::path::Path,
-        registry: &GrammarRegistry,
-        languages: &std::collections::HashMap<String, crate::config::LanguageConfig>,
-        fs: Arc<dyn FileSystem + Send + Sync>,
-    ) -> anyhow::Result<Self> {
-        let buffer = Buffer::load_from_file_streaming(path, fs)?;
-        let first_line = buffer.first_line_lossy();
-        let detected =
-            DetectedLanguage::from_path(path, first_line.as_deref(), registry, languages);
-        let mut state = Self::new_from_buffer(buffer);
-        state.apply_language(detected);
-        Ok(state)
-    }
-
     /// Create an editor state from a buffer and a pre-built `DetectedLanguage`.
     ///
     /// This is useful when you have already loaded a buffer with a specific encoding
