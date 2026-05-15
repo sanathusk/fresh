@@ -599,6 +599,27 @@ impl super::Editor {
                 }
             };
 
+        // Maintain the reverse mapping `buffer_to_group` so the new
+        // buffer is recognised as part of this group everywhere mode
+        // resolution / close handling looks it up. The prior panel
+        // buffer is only de-registered if it isn't still pointed at
+        // by some other panel in the same group (rare, but possible
+        // with custom layouts).
+        if let Some(prior) = prior_buffer_id {
+            let still_panel = self
+                .active_window()
+                .buffer_groups
+                .get(&bg_id)
+                .map(|g| g.panel_buffers.values().any(|b| *b == prior))
+                .unwrap_or(false);
+            if !still_panel {
+                self.active_window_mut().buffer_to_group.remove(&prior);
+            }
+        }
+        self.active_window_mut()
+            .buffer_to_group
+            .insert(new_buffer_id, bg_id);
+
         // The buffer needs the same per-buffer presentation flags
         // that `build_group_layout` applies to virtual panel buffers
         // (scrollable, no line-number margins, editing disabled).

@@ -359,13 +359,18 @@ const STREAM_POLL_MS = 200;
  * to overwrite it).
  */
 function spawnGitShow(hash: string, cwd: string): ProcessHandle<SpawnResult> {
+  // `--stat --patch` matches what the previous plugin used. The stat
+  // header gives users a per-file changed-lines summary at the top
+  // of the diff and is also what `git show` produces by default, so
+  // its presence is what most readers (and tests) expect.
+  //
   // The generated d.ts shows `spawnProcess(cmd, args, cwd?, stdoutTo?)`
   // as flat positional args. The runtime JS wrapper also accepts an
   // `{stdoutTo}` options object in the 4th slot, but using the flat
   // form keeps the call type-checked without a cast.
   return editor.spawnProcess(
     "git",
-    ["show", "--patch", hash],
+    ["show", "--stat", "--patch", hash],
     cwd,
     cachePathForHash(hash),
   );
@@ -742,24 +747,29 @@ registerHandler("git_log_q", git_log_q);
 // =============================================================================
 
 /**
- * Walk backwards from the cursor through the streaming diff buffer to
- * find the file + line context. Diff format:
+ * Walk through the streaming diff buffer to find the file + line
+ * context near the cursor. Diff format:
  *
- *     diff --git a/path b/path
- *     ...
- *     +++ b/path
- *     @@ -old,n +new_start,m @@
+ *     diff --git a/<path> b/<path>
+ *     index ...
+ *     --- a/<path>     (or /dev/null for additions)
+ *     +++ b/<path>     (or /dev/null for deletions)
+ *     @@ -old,n +new,m @@
  *     <context|+|- lines>
  *
  * Strategy:
- *  - Find the most recent `+++ b/<path>` line above the cursor — that
- *    names the file. (We use `+++` over `diff --git` because `+++` is
- *    the line immediately above the hunks, so paths with spaces stay
- *    unambiguous and we don't trip over rename headers.)
- *  - Find the most recent `@@ -... +<new_start>,<count> @@` header
- *    between that `+++` line and the cursor, then count `+` and
- *    context lines from the hunk start to the cursor to derive a
- *    "new file" line number.
+ *  - Read up to the END of the cursor's line, not just up to the
+ *    cursor's byte offset. This way a cursor sitting on a header line
+ *    (`diff --git`, `+++ b/...`, `@@ ...`) still gets that line
+ *    matched, matching the old text-property behaviour.
+ *  - Walk backwards for the per-file header. Match either:
+ *      `+++ b/<path>`             (preferred — names the new-side path)
+ *      `diff --git a/<src> b/<dst>` (fallback — covers the case where
+ *        the cursor is on the `diff --git` line itself, before the
+ *        `+++` line has appeared in the search range)
+ *  - Walk backwards for the most recent `@@ -... +<new>,<count> @@`
+ *    between the header and cursor, then count context/'+' rows
+ *    forward to the cursor to derive the new-side line number.
  */
 async function deriveFileAndLineFromDiffCursor(
   bufferId: number,
@@ -767,57 +777,78 @@ async function deriveFileAndLineFromDiffCursor(
   const cursor = editor.getCursorPosition();
   if (cursor < 0) return null;
 
-  // Read everything before the cursor. For very large diffs this is
-  // still bounded by the cursor position; users navigate to interesting
-  // sections, not into the tail.
-  const text = await editor.getBufferText(bufferId, 0, cursor);
+  const bufLen = editor.getBufferLength(bufferId);
+  const readEnd = Math.min(bufLen, cursor + 4096);
+  if (readEnd === 0) return null;
+  const text = await editor.getBufferText(bufferId, 0, readEnd);
   if (!text) return null;
   const lines = text.split("\n");
 
-  // Find +++ b/<path> by walking backwards.
+  // Locate the cursor's line index by walking byte offsets. `lines[i]`
+  // covers bytes [byte, byte+len]; the `\n` separator lives at
+  // byte+len, so the next line starts at byte+len+1.
+  let byte = 0;
+  let cursorLineIdx = lines.length - 1;
+  for (let i = 0; i < lines.length; i++) {
+    const lineLen = lines[i].length;
+    if (cursor <= byte + lineLen) {
+      cursorLineIdx = i;
+      break;
+    }
+    byte += lineLen + 1;
+  }
+
+  // Walk back from the cursor's line for the per-file header. Match
+  // either `+++ b/<path>` or `diff --git a/<src> b/<dst>` so cursor-
+  // on-header cases work.
   let file: string | null = null;
-  let plusPlusPlusIdx = -1;
-  for (let i = lines.length - 1; i >= 0; i--) {
+  let headerIdx = -1;
+  for (let i = cursorLineIdx; i >= 0; i--) {
     const l = lines[i];
     if (l.startsWith("+++ b/")) {
       file = l.slice(6).trim();
-      plusPlusPlusIdx = i;
+      headerIdx = i;
       break;
     }
-    // `+++ /dev/null` is a deletion — no file to open.
     if (l.startsWith("+++ /dev/null")) {
+      // Deletion — no new-side path. Opening the pre-image is a
+      // separate flow.
       return null;
     }
+    const m = /^diff --git a\/(.+?) b\/(.+)$/.exec(l);
+    if (m) {
+      const aSide = m[1];
+      const bSide = m[2];
+      file = bSide === "/dev/null" ? aSide : bSide;
+      headerIdx = i;
+      break;
+    }
   }
-  if (file === null || plusPlusPlusIdx < 0) return null;
+  if (file === null || headerIdx < 0) return null;
 
-  // Find the most recent `@@ ... +start,count @@` between +++ and cursor.
-  // Default: line 1 (if cursor is between +++ and the first hunk).
+  // Find the most recent `@@ ... +start,count @@` between header and
+  // cursor. Default: line 1 (cursor sits on the header itself, or
+  // between the header and the first hunk).
   let line = 1;
-  for (let i = lines.length - 1; i > plusPlusPlusIdx; i--) {
+  for (let i = cursorLineIdx; i > headerIdx; i--) {
     const l = lines[i];
-    // Match: `@@ -A,B +C,D @@ ...`  (D optional; C is what we want).
     const m = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(l);
     if (!m) continue;
     const newStart = parseInt(m[1], 10);
     if (!Number.isFinite(newStart)) return null;
-    // Walk forward from the hunk header to the cursor line, advancing
-    // the new-file line counter for context (' ') and addition ('+')
-    // rows; skip deletion ('-') rows since they don't exist in the new
-    // file. The hunk header itself is line `newStart - 1` once we
-    // increment past the next line.
+    // Walk forward from the hunk header to the cursor's line,
+    // advancing the new-file line counter for context (' ') and
+    // addition ('+') rows; skip deletion ('-') rows since they don't
+    // exist in the new file.
     let cur = newStart;
-    for (let j = i + 1; j < lines.length; j++) {
-      const row = lines[j];
-      if (j === lines.length - 1) {
-        // Last partial line — the user's cursor sits here.
+    for (let j = i + 1; j <= cursorLineIdx; j++) {
+      if (j === cursorLineIdx) {
         line = cur;
         break;
       }
-      const ch = row.charAt(0);
+      const ch = lines[j].charAt(0);
       if (ch === "+" || ch === " " || ch === "") cur += 1;
-      // '-' lines: do not advance new-file counter.
-      // '\\' (e.g. `\ No newline at end of file`): also skip.
+      // '-' / '\' (no-newline marker): don't advance.
     }
     break;
   }

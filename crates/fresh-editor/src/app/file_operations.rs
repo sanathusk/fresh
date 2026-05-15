@@ -1430,6 +1430,18 @@ impl Editor {
                 continue;
             }
 
+            // Skip buffers that have opted out of auto-revert. The
+            // typical caller is `openFileStreaming`, which manages
+            // appends itself via `extend_streaming`; an auto-revert
+            // here would race with those appends, wiping the piece
+            // tree mid-stream and snapping the cursor back to byte 0
+            // on every kernel write notification.
+            if let Some(meta) = self.active_window().buffer_metadata.get(&buffer_id) {
+                if !meta.auto_revert_enabled {
+                    continue;
+                }
+            }
+
             let state = match self
                 .windows
                 .get(&self.active_window)

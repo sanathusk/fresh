@@ -213,12 +213,27 @@ impl Editor {
         self.active_window().effective_active_pair()
     }
 
-    /// Get the mode name for the active buffer (if it's a virtual buffer)
+    /// Get the mode name for the active buffer.
+    ///
+    /// Resolution order:
+    ///   1. The buffer's own virtual-buffer mode, if it has one.
+    ///   2. The mode declared by the buffer-group containing this
+    ///      buffer (e.g. a `git-log` group's keybindings apply to its
+    ///      panels regardless of whether each panel is a virtual
+    ///      buffer or a file-backed one — `openFileStreaming` produces
+    ///      the latter for streaming detail panels).
     pub fn active_buffer_mode(&self) -> Option<&str> {
-        self.active_window()
+        let buffer_id = self.active_buffer();
+        let win = self.active_window();
+        if let Some(mode) = win
             .buffer_metadata
-            .get(&self.active_buffer())
+            .get(&buffer_id)
             .and_then(|meta| meta.virtual_mode())
+        {
+            return Some(mode);
+        }
+        let group_id = win.buffer_to_group.get(&buffer_id).copied()?;
+        win.buffer_groups.get(&group_id).map(|g| g.mode.as_str())
     }
 
     /// Check if the active buffer is read-only

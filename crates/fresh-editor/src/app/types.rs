@@ -184,6 +184,14 @@ pub struct BufferMetadata {
     /// Whether this buffer should be hidden from tabs (used for composite source buffers)
     pub hidden_from_tabs: bool,
 
+    /// Whether auto-revert (reload on external file change) should
+    /// fire for this buffer. Defaults to true for any user-opened
+    /// file. Plugins that drive the buffer's contents themselves —
+    /// `openFileStreaming` is the prototype — set this to false so
+    /// the file-watcher's reload doesn't race with their own
+    /// `extend_streaming` calls.
+    pub auto_revert_enabled: bool,
+
     /// Whether this buffer is a synthetic placeholder created when the user
     /// closed their last buffer with `auto_create_empty_buffer_on_last_buffer_close`
     /// disabled. The editor's invariants require at least one buffer at all
@@ -269,6 +277,7 @@ impl BufferMetadata {
             binary: false,
             lsp_opened_with: HashSet::new(),
             hidden_from_tabs: false,
+            auto_revert_enabled: true,
             synthetic_placeholder: false,
             is_preview: false,
             recovery_id: None,
@@ -289,6 +298,7 @@ impl BufferMetadata {
             read_only: false,
             binary: false,
             lsp_opened_with: HashSet::new(),
+            auto_revert_enabled: true,
             hidden_from_tabs: false,
             synthetic_placeholder: false,
             is_preview: false,
@@ -343,6 +353,7 @@ impl BufferMetadata {
             lsp_disabled_reason: None,
             read_only: is_library,
             binary: false,
+            auto_revert_enabled: true,
             lsp_opened_with: HashSet::new(),
             hidden_from_tabs: false,
             synthetic_placeholder: false,
@@ -381,6 +392,7 @@ impl BufferMetadata {
             lsp_enabled: true,
             lsp_disabled_reason: None,
             read_only: true,
+            auto_revert_enabled: true,
             binary: false,
             lsp_opened_with: HashSet::new(),
             hidden_from_tabs: false,
@@ -524,6 +536,7 @@ impl BufferMetadata {
             display_name: name,
             lsp_enabled: false, // Virtual buffers don't use LSP
             lsp_disabled_reason: Some(t!("lsp.disabled.virtual").to_string()),
+            auto_revert_enabled: true,
             read_only,
             binary: false,
             lsp_opened_with: HashSet::new(),
@@ -542,6 +555,7 @@ impl BufferMetadata {
             kind: BufferKind::Virtual { mode },
             display_name: name,
             lsp_enabled: false,
+            auto_revert_enabled: true,
             lsp_disabled_reason: Some(t!("lsp.disabled.virtual").to_string()),
             read_only: true, // Hidden buffers are always read-only
             binary: false,

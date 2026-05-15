@@ -1751,13 +1751,12 @@ impl Editor {
         };
 
         // Plugin-managed surfaces (typically buffer-group panel
-        // targets) shouldn't show up in quick-switch / tab strip. The
-        // plugin can route the buffer visually via
-        // `setBufferGroupPanelBuffer`; we also drop the auto-added
-        // tab entry that `open_file_no_focus` placed in the active
-        // split.
+        // targets) shouldn't show up in quick-switch / tab strip, and
+        // shouldn't be auto-reverted on file change — the plugin is
+        // driving the file's contents itself via `extend_streaming`.
         if let Some(meta) = self.active_window_mut().buffer_metadata.get_mut(&buffer_id) {
             meta.hidden_from_tabs = true;
+            meta.auto_revert_enabled = false;
         }
         let active_split = self
             .windows
@@ -5637,12 +5636,17 @@ impl Window {
         }
 
         // Update cursor information for active buffer.
+        //
+        // Use `effective_active_pair()` for the split id rather than
+        // the split manager's outer `active_split()`. When the active
+        // split holds a buffer-group tab, the user's keystrokes (and
+        // therefore the meaningful cursor) live in the focused inner
+        // panel's leaf — `focused_group_leaf` — not the outer leaf.
+        // Reading the outer's cursor here would publish (0, 0) into
+        // the snapshot while the user is editing the inner panel,
+        // which is what `editor.getCursorPosition()` then sees.
         let active_buf_id = snapshot.active_buffer_id;
-        let active_split_id = self
-            .buffers
-            .split_manager()
-            .map(|m| m.active_split())
-            .expect("active window must have a populated split layout");
+        let active_split_id = self.effective_active_pair().0;
         self.buffers
             .with_all_mut(|buffers_mut, mgr, vs_map| {
                 let _ = mgr; // active_split_id was computed above
