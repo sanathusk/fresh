@@ -6,6 +6,7 @@ interface SymbolItem {
   name: string;
   kind: number;
   startLine: number;
+  startCharacter: number;
   endLine: number;
 }
 
@@ -57,6 +58,7 @@ function getKindLabel(kind: number): string {
 let cachedBufferId: number | null = null;
 let cachedFilePath: string = "";
 let cachedLanguage: string | undefined = undefined;
+let cachedCursorPosition = 0;
 
 async function navigateToSymbol(bufferId: number, sym: SymbolItem): Promise<void> {
   if (bufferId === null) return;
@@ -65,19 +67,7 @@ async function navigateToSymbol(bufferId: number, sym: SymbolItem): Promise<void
 
   if (bytePos === null) return;
 
-  editor.setBufferCursor(bufferId, bytePos);
-
-  const lineCount = sym.endLine - sym.startLine + 1;
-
-  if (lineCount > 1) {
-    editor.executeActions([
-      { action: "select_line", count: 1 },
-      { action: "select_down", count: lineCount - 2 },
-      { action: "select_line_end", count: 1 },
-    ]);
-  } else {
-    editor.executeActions([{ action: "select_line_end", count: 1 }]);
-  }
+  editor.setBufferCursor(bufferId, bytePos + (sym.startCharacter ?? 0));
 
   editor.scrollBufferToLine(bufferId, sym.startLine);
 }
@@ -120,6 +110,9 @@ const finder = new Finder(editor, {
   onSelectionChanged: async (sym) => {
     await navigateToSymbol(cachedBufferId, sym);
   },
+  onClose: () => {
+    editor.setBufferCursor(cachedBufferId, cachedCursorPosition);
+  },
 });
 
 const finderSource: FilterSource<SymbolItem> = {
@@ -158,6 +151,8 @@ async function openSymbolsListHandler(): Promise<void> {
     return;
   }
 
+  cachedCursorPosition = editor.getCursorPosition();
+
   finder.prompt({
     title: "Go to symbol: ",
     source: finderSource,
@@ -182,6 +177,7 @@ function parseSymbols(result: unknown): SymbolItem[] {
       if (!name) continue;
 
       let startLine = 1;
+      let startCharacter = 0;
       let endLine = 1;
 
       if ("location" in raw && typeof raw.location === "object") {
@@ -193,6 +189,7 @@ function parseSymbols(result: unknown): SymbolItem[] {
           const end = range.end as Record<string, unknown>;
 
           startLine = typeof start.line === "number" ? start.line : 0;
+          startCharacter = typeof start.character === "number" ? start.character : 0;
           endLine = typeof end.line === "number" ? end.line : startLine;
         }
       } else if ("selectionRange" in raw) {
@@ -201,6 +198,7 @@ function parseSymbols(result: unknown): SymbolItem[] {
         const end = selectionRange.end as Record<string, unknown>;
 
         startLine = typeof start.line === "number" ? start.line : 0;
+        startCharacter = typeof start.character === "number" ? start.character : 0;
         endLine = typeof end.line === "number" ? end.line : startLine;
       }
 
@@ -208,6 +206,7 @@ function parseSymbols(result: unknown): SymbolItem[] {
         name,
         kind,
         startLine,
+        startCharacter,
         endLine,
       });
     }

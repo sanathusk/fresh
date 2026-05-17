@@ -1021,6 +1021,11 @@ export class Finder<T> {
     this.promptState.entries = [];
     this.promptState.originalSplitId = null;
     this.editor.setStatus("Cancelled");
+
+    // Notify caller that the prompt was closed
+    if (this.config.onClose) {
+      this.config.onClose();
+    }
   }
 
   private closePrompt(): void {
