@@ -592,16 +592,8 @@ impl Editor {
         };
 
         match control_type {
-            Some("number") => {
-                if let Some(ref mut state) = self.settings_state {
-                    if let Some(item) = state.current_item_mut() {
-                        if let SettingControl::Number(ref mut num_state) = item.control {
-                            num_state.increment();
-                        }
-                    }
-                    state.on_value_changed();
-                }
-            }
+            // Number inc/dec removed — direct typing only. Action still
+            // exists for Dropdown cycling.
             Some("dropdown") => {
                 if let Some(ref mut state) = self.settings_state {
                     if let Some(item) = state.current_item_mut() {
@@ -658,16 +650,8 @@ impl Editor {
         };
 
         match control_type {
-            Some("number") => {
-                if let Some(ref mut state) = self.settings_state {
-                    if let Some(item) = state.current_item_mut() {
-                        if let SettingControl::Number(ref mut num_state) = item.control {
-                            num_state.decrement();
-                        }
-                    }
-                    state.on_value_changed();
-                }
-            }
+            // Number inc/dec removed — direct typing only. Action still
+            // exists for Dropdown cycling.
             Some("dropdown") => {
                 if let Some(ref mut state) = self.settings_state {
                     if let Some(item) = state.current_item_mut() {
