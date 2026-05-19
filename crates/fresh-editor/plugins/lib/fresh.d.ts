@@ -722,6 +722,13 @@ type OverlayOptions = {
 	*/
 	extendToLineEnd: boolean;
 	/**
+	* When `true`, `fg` is applied only on cells whose existing fg
+	* matches this overlay's resolved bg — i.e. a same-colour fg/bg
+	* collision. Lets a row-wide overlay stay legible on tokens that
+	* share the bg's colour without repainting unrelated tokens.
+	*/
+	fgOnCollisionOnly: boolean;
+	/**
 	* Optional URL for OSC 8 terminal hyperlinks.
 	* When set, the overlay text becomes a clickable hyperlink in terminals
 	* that support OSC 8 escape sequences.
