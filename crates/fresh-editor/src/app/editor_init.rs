@@ -569,20 +569,21 @@ impl Editor {
             &working_dir,
         );
 
-        // Determine the active window's id and root. Persisted
-        // `env.active` is *cross-project* — it just names the last
-        // session the user touched anywhere. Honoring it blindly
-        // when the user re-launches inside a different project
-        // strands the editor with an LSP and Open-Terminal default
-        // pointed at the wrong tree (see issue #2026). Prefer a
-        // persisted window that actually belongs to `working_dir`,
-        // and fall back to the boot-time defaults (id 1, process
-        // cwd) when no persisted window matches.
-        let (active_window_id, active_window_root) =
-            crate::app::orchestrator_persistence::pick_active_window_for_cwd(
-                persisted_env.as_ref(),
-                &working_dir,
-            )
+        // Reopen the session the user last used *in this project*, if
+        // any — never a session from another project. Cross-project
+        // restore is what dragged yesterday's directories/files into a
+        // different project's window; `pick_active_window_for_cwd` only
+        // ever returns a window rooted at `working_dir`, so launching
+        // elsewhere can't pull this project's sessions in (and vice
+        // versa). When the cwd has no sessions, fall back to a clean
+        // base window (id 1) at the launch cwd. This also keeps the LSP
+        // / Open-Terminal default pointed at the launch cwd (issue
+        // #2026).
+        let picked_active = crate::app::orchestrator_persistence::pick_active_window_for_cwd(
+            persisted_env.as_ref(),
+            &working_dir,
+        );
+        let (active_window_id, active_window_root) = picked_active
             .map(|w| (fresh_core::WindowId(w.id), w.root.clone()))
             .unwrap_or((fresh_core::WindowId(1), working_dir.clone()));
 
@@ -1067,13 +1068,15 @@ impl Editor {
 
         // Build the active window — the one that holds the seed
         // buffer, the SplitManager, the LSP, and the
-        // already-configured per-window bridge. Its label/root
-        // come from persistence when present so a restored session
-        // looks correct from frame zero; otherwise it falls back to
-        // the boot defaults.
-        let (active_label, active_root, active_plugin_state) = persisted_env
-            .as_ref()
-            .and_then(|env| env.windows.iter().find(|w| w.id == active_window_id.0))
+        // already-configured per-window bridge. Its label / root /
+        // plugin state come from the persisted session we chose to
+        // reopen (the last-used one for this cwd). When there was none
+        // we boot a clean base: empty label, cwd root, no inherited
+        // state. We deliberately key off the *picked* window, not a
+        // lookup by `active_window_id` — a clean base reuses id 1, and
+        // a stale persisted id-1 window (a different project's old
+        // base) must not lend its label/root/state to it.
+        let (active_label, active_root, active_plugin_state) = picked_active
             .map(|w| (w.label.clone(), w.root.clone(), w.plugin_state.clone()))
             .unwrap_or_else(|| (String::new(), working_dir.clone(), HashMap::new()));
 

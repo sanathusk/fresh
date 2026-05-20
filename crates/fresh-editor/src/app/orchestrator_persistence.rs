@@ -37,15 +37,20 @@
 //! On startup, [`read_persisted_windows_env`] +
 //! [`read_persisted_plugin_state`] are called from
 //! `Editor::with_options` (see `editor_init.rs`) *before* the
-//! editor struct is built. The factory uses the parsed envelope
-//! to pick the active window's id and root (so the spawned LSP
-//! targets the right project), to attach the seed buffer +
-//! split layout to the active window directly, and to populate
-//! `plugin_global_state` so plugins reading `getGlobalState`
-//! during their on-load handler see the previous run's values.
-//! All non-active persisted windows come back as inert shells
-//! (no splits, no LSP); first dive into one re-warms it on
-//! demand exactly like a freshly-`createWindow`-ed session.
+//! editor struct is built. The factory reopens the session the user
+//! last used **in the launch cwd's project** (see
+//! [`pick_active_window_for_cwd`]) and uses it for the active window's
+//! id / root / label / plugin state, so the spawned LSP targets the
+//! right project. Crucially the pick is cwd-scoped: a session from a
+//! *different* project is never activated, which is what kept one
+//! day's directories/files from bleeding into another project's
+//! window. When the cwd has no sessions, the active window is a clean
+//! base (id 1) rooted at the cwd. All other persisted windows come
+//! back as inert shells (no splits, no LSP); first dive into one
+//! re-warms it on demand exactly like a freshly-`createWindow`-ed
+//! session. The factory also populates `plugin_global_state` so
+//! plugins reading `getGlobalState` during their on-load handler see
+//! the previous run's values.
 //!
 //! The "warm" half of warm-swap (split layout, LSP, file
 //! explorer state) is intentionally *not* persisted: the only
@@ -165,24 +170,30 @@ pub(crate) fn read_persisted_windows_env(
     }
 }
 
-/// Pick which persisted window the active-window slot should be
-/// restored to at boot time, scoped to the editor's launch cwd.
+/// Pick which persisted session to bring up at boot, scoped to the
+/// editor's launch cwd.
 ///
-/// The persisted `env.active` is cross-project: it names the last
-/// window the user touched anywhere, not necessarily one rooted at
-/// the cwd. Honoring it blindly when the user re-launches inside a
-/// different project leaves the active window pointed at an
-/// unrelated tree — "Open Terminal" spawns a shell in the other
-/// project, the LSP starts under the wrong root. So we re-pick:
+/// The rule the user expects: re-opening the editor in a project
+/// should reopen the session they last used **in that project** —
+/// but never a session from a *different* project (that cross-project
+/// bleed is what made one day's work leak into the next). So we only
+/// ever consider windows that belong to `cwd`:
 ///
-///   1. If `env.active`'s window belongs to `cwd`, keep it.
-///   2. Else, pick any persisted window that belongs to `cwd`.
-///   3. Else, `None` — caller falls back to a fresh window at cwd.
+///   1. If `env.active` (the globally last-used session at quit)
+///      belongs to `cwd`, that's the last-used session for this
+///      project — bring it up.
+///   2. Else pick the most-recently-*created* window belonging to
+///      `cwd` (highest id — orchestrator ids are monotonic). This is
+///      the fallback for "your last-used session was in another
+///      project, but this one has sessions of its own."
+///   3. Else `None` — the caller boots a clean base window at `cwd`.
 ///
-/// A window "belongs to" `cwd` when its `project_path` (preferred
-/// for orchestrator sessions, which always carry one) or its
-/// `root` (legacy / non-orchestrator windows) equals `cwd` after
-/// canonicalization.
+/// A window "belongs to" `cwd` when its `project_path` (preferred for
+/// orchestrator sessions, which always carry one) or its `root`
+/// (legacy / non-orchestrator windows) equals `cwd` after
+/// canonicalization. The previous base (id 1) is eligible too — if it
+/// was the user's last-used window in this cwd, reopening it is just a
+/// clean editor at the cwd.
 pub(crate) fn pick_active_window_for_cwd<'a>(
     env: Option<&'a PersistedWindows>,
     cwd: &Path,
@@ -195,7 +206,10 @@ pub(crate) fn pick_active_window_for_cwd<'a>(
     {
         return Some(w);
     }
-    env.windows.iter().find(|w| window_matches_cwd(w, cwd))
+    env.windows
+        .iter()
+        .filter(|w| window_matches_cwd(w, cwd))
+        .max_by_key(|w| w.id)
 }
 
 fn window_matches_cwd(w: &PersistedWindow, cwd: &Path) -> bool {
@@ -764,41 +778,66 @@ mod tests {
     }
 
     #[test]
-    fn pick_active_falls_through_when_persisted_active_belongs_to_another_project() {
-        // Regression for issue #2026: launching fresh in /repoA must
-        // not activate a persisted window rooted at /repoB just
-        // because it was the last window the user touched anywhere.
-        let env = env_with(
-            2,
-            vec![
-                make_window(1, "/repoA", Some("/repoA")),
-                make_window(2, "/repoB", Some("/repoB")),
-            ],
-        );
-        let cwd = Path::new("/repoA");
-        let picked = pick_active_window_for_cwd(Some(&env), cwd).expect("should pick a window");
-        assert_eq!(
-            picked.id, 1,
-            "must pick the /repoA-rooted window, not env.active=2"
-        );
-    }
-
-    #[test]
-    fn pick_active_keeps_env_active_when_it_matches_cwd() {
+    fn pick_active_never_crosses_projects() {
+        // Regression for the orchestration bug: launching in /repoB
+        // must never bring up a session rooted in /repoA, even when
+        // /repoA holds the globally last-used session (env.active).
         let env = env_with(
             2,
             vec![
                 make_window(1, "/repoA", Some("/repoA")),
                 make_window(2, "/repoA", Some("/repoA")),
+                make_window(3, "/repoB", Some("/repoB")),
+            ],
+        );
+        let picked = pick_active_window_for_cwd(Some(&env), Path::new("/repoB"))
+            .expect("a /repoB session exists");
+        assert_eq!(
+            picked.id, 3,
+            "must pick the /repoB session, not env.active=2"
+        );
+    }
+
+    #[test]
+    fn pick_active_reopens_last_used_for_cwd() {
+        // env.active points at this project's last-used session — it
+        // wins even though it isn't the highest id.
+        let env = env_with(
+            2,
+            vec![
+                make_window(2, "/repoA", Some("/repoA")),
+                make_window(5, "/repoA", Some("/repoA")),
             ],
         );
         let picked =
             pick_active_window_for_cwd(Some(&env), Path::new("/repoA")).expect("matching window");
-        assert_eq!(picked.id, 2, "env.active wins when it matches");
+        assert_eq!(
+            picked.id, 2,
+            "env.active is the last-used session for the cwd"
+        );
+    }
+
+    #[test]
+    fn pick_active_falls_back_to_most_recent_session_for_cwd() {
+        // The globally last-used session (env.active=9) is in another
+        // project, so for /repoA we fall back to the most-recently-
+        // created /repoA session (highest id), not the first.
+        let env = env_with(
+            9,
+            vec![
+                make_window(2, "/repoA", Some("/repoA")),
+                make_window(7, "/repoA", Some("/repoA")),
+                make_window(9, "/repoB", Some("/repoB")),
+            ],
+        );
+        let picked =
+            pick_active_window_for_cwd(Some(&env), Path::new("/repoA")).expect("matching window");
+        assert_eq!(picked.id, 7, "fall back to the most recent /repoA session");
     }
 
     #[test]
     fn pick_active_returns_none_when_no_window_matches_cwd() {
+        // No session for this cwd → caller boots a clean base window.
         let env = env_with(
             1,
             vec![
