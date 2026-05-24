@@ -148,343 +148,15 @@ impl WorkspaceTracker {
 }
 
 impl Editor {
-    /// Capture current editor state into a Workspace
+    /// Capture the active window into a `Workspace`.
+    ///
+    /// Delegates the per-window snapshot to `Window::capture_workspace`
+    /// (rooted at the window's own `root`) and injects the editor-global
+    /// `plugin_global_state`, which the window cannot see.
     pub fn capture_workspace(&self) -> Workspace {
-        tracing::debug!("Capturing workspace for {:?}", self.working_dir());
-
-        // Collect terminal metadata for workspace restore
-        let mut terminals = Vec::new();
-        let mut terminal_indices: HashMap<TerminalId, usize> = HashMap::new();
-        let mut seen = HashSet::new();
-        for terminal_id in self.active_window().terminal_buffers.values().copied() {
-            if seen.insert(terminal_id) {
-                // Ephemeral terminals (plugin-created tool UIs — rebuilds,
-                // exec shells, build output) do not belong in the persisted
-                // workspace. Skipping them here prevents their backing files
-                // from being serialized, which is what used to cause a newly
-                // spawned plugin terminal to come back with scrollback from
-                // the prior run.
-                if self
-                    .active_window()
-                    .ephemeral_terminals
-                    .contains(&terminal_id)
-                {
-                    continue;
-                }
-                let idx = terminals.len();
-                terminal_indices.insert(terminal_id, idx);
-                let handle = self.active_window().terminal_manager.get(terminal_id);
-                let (cols, rows) = handle
-                    .map(|h| h.size())
-                    .unwrap_or((self.terminal_width, self.terminal_height));
-                let cwd = handle.and_then(|h| h.cwd());
-                let shell = handle
-                    .map(|h| h.shell().to_string())
-                    .unwrap_or_else(crate::services::terminal::detect_shell);
-                let log_path = self
-                    .active_window()
-                    .terminal_log_files
-                    .get(&terminal_id)
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        let root = self.dir_context.terminal_dir_for(self.working_dir());
-                        root.join(format!("fresh-terminal-{}.log", terminal_id.0))
-                    });
-                let backing_path = self
-                    .active_window()
-                    .terminal_backing_files
-                    .get(&terminal_id)
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        let root = self.dir_context.terminal_dir_for(self.working_dir());
-                        root.join(format!("fresh-terminal-{}.txt", terminal_id.0))
-                    });
-
-                terminals.push(SerializedTerminalWorkspace {
-                    terminal_index: idx,
-                    cwd,
-                    shell,
-                    cols,
-                    rows,
-                    log_path,
-                    backing_path,
-                });
-            }
-        }
-
-        let split_layout = serialize_split_node(
-            self.windows
-                .get(&self.active_window)
-                .and_then(|w| w.buffers.splits())
-                .map(|(mgr, _)| mgr)
-                .expect("active window must have a populated split layout")
-                .root(),
-            &self.active_window().buffer_metadata,
-            self.working_dir(),
-            self.windows
-                .get(&self.active_window)
-                .map(|w| &w.terminal_buffers)
-                .expect("active window present"),
-            &terminal_indices,
-            self.windows
-                .get(&self.active_window)
-                .and_then(|w| w.buffers.splits())
-                .map(|(mgr, _)| mgr)
-                .expect("active window must have a populated split layout")
-                .labels(),
-        );
-
-        // Build a map of leaf_id -> active_buffer_id from the split tree
-        // This tells us which buffer's cursor/scroll to save for each split
-        let active_buffers: HashMap<LeafId, BufferId> = self
-            .windows
-            .get(&self.active_window)
-            .and_then(|w| w.buffers.splits())
-            .map(|(mgr, _)| mgr)
-            .expect("active window must have a populated split layout")
-            .root()
-            .get_leaves_with_rects(ratatui::layout::Rect::default())
-            .into_iter()
-            .map(|(leaf_id, buffer_id, _)| (leaf_id, buffer_id))
-            .collect();
-
-        let mut split_states = HashMap::new();
-        for (leaf_id, view_state) in self
-            .windows
-            .get(&self.active_window)
-            .and_then(|w| w.buffers.splits())
-            .map(|(_, vs)| vs)
-            .expect("active window must have a populated split layout")
-        {
-            let active_buffer = active_buffers.get(leaf_id).copied();
-            let serialized = serialize_split_view_state(
-                view_state,
-                self.windows
-                    .get(&self.active_window)
-                    .map(|w| w.buffers.as_map())
-                    .expect("active window present"),
-                &self.active_window().buffer_metadata,
-                self.working_dir(),
-                active_buffer,
-                self.windows
-                    .get(&self.active_window)
-                    .map(|w| &w.terminal_buffers)
-                    .expect("active window present"),
-                &terminal_indices,
-            );
-            tracing::trace!(
-                "Split {:?}: {} open tabs, active_buffer={:?}",
-                leaf_id,
-                serialized.open_tabs.len(),
-                active_buffer
-            );
-            split_states.insert(leaf_id.0 .0, serialized);
-        }
-
-        tracing::debug!(
-            "Captured {} split states, active_split={}",
-            split_states.len(),
-            SplitId::from(
-                self.windows
-                    .get(&self.active_window)
-                    .and_then(|w| w.buffers.splits())
-                    .map(|(mgr, _)| mgr)
-                    .expect("active window must have a populated split layout")
-                    .active_split()
-            )
-            .0
-        );
-
-        // Capture file explorer state
-        let file_explorer = if let Some(explorer) = self.file_explorer().as_ref() {
-            // Get expanded directories from the tree
-            let expanded_dirs = get_expanded_dirs(explorer, self.working_dir());
-            FileExplorerState {
-                visible: self.file_explorer_visible(),
-                width: self.active_window().file_explorer_width,
-                side: self.active_window().file_explorer_side,
-                expanded_dirs,
-                scroll_offset: explorer.get_scroll_offset(),
-                show_hidden: explorer.ignore_patterns().show_hidden(),
-                show_gitignored: explorer.ignore_patterns().show_gitignored(),
-            }
-        } else {
-            FileExplorerState {
-                visible: self.file_explorer_visible(),
-                width: self.active_window().file_explorer_width,
-                side: self.active_window().file_explorer_side,
-                expanded_dirs: Vec::new(),
-                scroll_offset: 0,
-                show_hidden: false,
-                show_gitignored: false,
-            }
-        };
-
-        // Capture config overrides (only store deviations from defaults).
-        // `menu_bar_hidden` is intentionally left unset: menu bar visibility
-        // is a global preference (`editor.show_menu_bar`), not a per-workspace
-        // override. See issue #1156.
-        let config_overrides = WorkspaceConfigOverrides {
-            line_numbers: Some(self.config.editor.line_numbers),
-            relative_line_numbers: Some(self.config.editor.relative_line_numbers),
-            line_wrap: Some(self.config.editor.line_wrap),
-            syntax_highlighting: Some(self.config.editor.syntax_highlighting),
-            enable_inlay_hints: Some(self.config.editor.enable_inlay_hints),
-            mouse_enabled: Some(self.active_window().mouse_enabled),
-            menu_bar_hidden: None,
-        };
-
-        // Capture histories using the items() accessor from the prompt_histories HashMap
-        let histories = WorkspaceHistories {
-            search: self
-                .active_window()
-                .prompt_histories
-                .get("search")
-                .map(|h| h.items().to_vec())
-                .unwrap_or_default(),
-            replace: self
-                .active_window()
-                .prompt_histories
-                .get("replace")
-                .map(|h| h.items().to_vec())
-                .unwrap_or_default(),
-            command_palette: Vec::new(), // Future: when command palette has history
-            goto_line: self
-                .active_window()
-                .prompt_histories
-                .get("goto_line")
-                .map(|h| h.items().to_vec())
-                .unwrap_or_default(),
-            open_file: Vec::new(), // Future: when file open prompt has history
-        };
-        tracing::trace!(
-            "Captured histories: {} search, {} replace",
-            histories.search.len(),
-            histories.replace.len()
-        );
-
-        // Capture search options
-        let search_options = SearchOptions {
-            case_sensitive: self.active_window().search_case_sensitive,
-            whole_word: self.active_window().search_whole_word,
-            use_regex: self.active_window().search_use_regex,
-            confirm_each: self.active_window().search_confirm_each,
-        };
-
-        // Capture bookmarks (per-window after Step 0f).
-        let bookmarks = serialize_bookmarks(
-            &self.active_window().bookmarks,
-            &self.active_window().buffer_metadata,
-            self.working_dir(),
-        );
-
-        // Capture external files (files outside working_dir)
-        // These are stored as absolute paths since they can't be made relative.
-        // Skip plugin-managed transient surfaces (e.g. git_log's per-commit
-        // `<dataDir>/git-show/<sha>.diff` buffers opened via
-        // `openFileStreaming`) — they're flagged `hidden_from_tabs` and
-        // would otherwise reappear as garbage tabs on the next launch.
-        let external_files: Vec<PathBuf> = self
-            .active_window()
-            .buffer_metadata
-            .values()
-            .filter(|meta| !meta.hidden_from_tabs && !meta.is_virtual())
-            .filter_map(|meta| meta.file_path())
-            .filter(|abs_path| abs_path.strip_prefix(self.working_dir()).is_err())
-            .cloned()
-            .collect();
-        if !external_files.is_empty() {
-            tracing::debug!("Captured {} external files", external_files.len());
-        }
-
-        // Capture read-only file paths. Store relative when inside
-        // working_dir (matches how open_tabs paths are stored), otherwise
-        // absolute — mirrors external_files. Same hidden/virtual filter
-        // applies for the same reason.
-        let read_only_files: Vec<PathBuf> = self
-            .active_window()
-            .buffer_metadata
-            .values()
-            .filter(|meta| !meta.hidden_from_tabs && !meta.is_virtual())
-            .filter(|meta| meta.read_only)
-            .filter_map(|meta| meta.file_path().cloned())
-            .filter(|p| !p.as_os_str().is_empty())
-            .map(|p| {
-                p.strip_prefix(self.working_dir())
-                    .map(|rel| rel.to_path_buf())
-                    .unwrap_or(p)
-            })
-            .collect();
-
-        // Capture unnamed buffer references (for hot_exit)
-        let unnamed_buffers: Vec<UnnamedBufferRef> = if self.config.editor.hot_exit {
-            self.active_window()
-                .buffer_metadata
-                .iter()
-                .filter_map(|(buffer_id, meta)| {
-                    // Only file-backed buffers with empty path (unnamed)
-                    let path = meta.file_path()?;
-                    if !path.as_os_str().is_empty() {
-                        return None;
-                    }
-                    // Skip composite/hidden buffers
-                    if meta.hidden_from_tabs || meta.is_virtual() {
-                        return None;
-                    }
-                    // Skip if buffer has no content
-                    let state = self
-                        .windows
-                        .get(&self.active_window)
-                        .map(|w| &w.buffers)
-                        .expect("active window present")
-                        .get(buffer_id)?;
-                    if state.buffer.total_bytes() == 0 {
-                        return None;
-                    }
-                    // Get or generate recovery ID
-                    let recovery_id = meta.recovery_id.clone()?;
-                    Some(UnnamedBufferRef {
-                        recovery_id,
-                        display_name: meta.display_name.clone(),
-                    })
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        if !unnamed_buffers.is_empty() {
-            tracing::debug!("Captured {} unnamed buffers", unnamed_buffers.len());
-        }
-
-        Workspace {
-            version: WORKSPACE_VERSION,
-            working_dir: self.working_dir().to_path_buf(),
-            split_layout,
-            active_split_id: SplitId::from(
-                self.windows
-                    .get(&self.active_window)
-                    .and_then(|w| w.buffers.splits())
-                    .map(|(mgr, _)| mgr)
-                    .expect("active window must have a populated split layout")
-                    .active_split(),
-            )
-            .0,
-            split_states,
-            config_overrides,
-            file_explorer,
-            histories,
-            search_options,
-            bookmarks,
-            terminals,
-            external_files,
-            read_only_files,
-            unnamed_buffers,
-            plugin_global_state: self.plugin_global_state.clone(),
-            saved_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-        }
+        let mut ws = self.active_window().capture_workspace();
+        ws.plugin_global_state = self.plugin_global_state.clone();
+        ws
     }
 
     /// Save the current workspace to disk
@@ -2126,6 +1798,234 @@ impl Editor {
 
         self.active_window = originally_active;
         self.plugin_global_state = saved_plugin_state;
+    }
+}
+
+impl crate::app::window::Window {
+    /// Snapshot THIS window's restorable state into a `Workspace`,
+    /// rooted at `self.root` and reading only window-owned state +
+    /// `self.resources`. The inverse of restore. `plugin_global_state`
+    /// is left empty here — it is editor-global, so the `Editor` wrapper
+    /// fills it in (see `Editor::capture_workspace`).
+    pub(crate) fn capture_workspace(&self) -> Workspace {
+        tracing::debug!("Capturing workspace for {:?}", self.root);
+
+        let mut terminals = Vec::new();
+        let mut terminal_indices: HashMap<TerminalId, usize> = HashMap::new();
+        let mut seen = HashSet::new();
+        for terminal_id in self.terminal_buffers.values().copied() {
+            if seen.insert(terminal_id) {
+                if self.ephemeral_terminals.contains(&terminal_id) {
+                    continue;
+                }
+                let idx = terminals.len();
+                terminal_indices.insert(terminal_id, idx);
+                let handle = self.terminal_manager.get(terminal_id);
+                let (cols, rows) = handle
+                    .map(|h| h.size())
+                    .unwrap_or((self.terminal_width, self.terminal_height));
+                let cwd = handle.and_then(|h| h.cwd());
+                let shell = handle
+                    .map(|h| h.shell().to_string())
+                    .unwrap_or_else(crate::services::terminal::detect_shell);
+                let log_path = self
+                    .terminal_log_files
+                    .get(&terminal_id)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        let root = self.resources.dir_context.terminal_dir_for(&self.root);
+                        root.join(format!("fresh-terminal-{}.log", terminal_id.0))
+                    });
+                let backing_path = self
+                    .terminal_backing_files
+                    .get(&terminal_id)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        let root = self.resources.dir_context.terminal_dir_for(&self.root);
+                        root.join(format!("fresh-terminal-{}.txt", terminal_id.0))
+                    });
+
+                terminals.push(SerializedTerminalWorkspace {
+                    terminal_index: idx,
+                    cwd,
+                    shell,
+                    cols,
+                    rows,
+                    log_path,
+                    backing_path,
+                });
+            }
+        }
+
+        let (mgr, view_states) = self
+            .buffers
+            .splits()
+            .expect("window must have a populated split layout");
+
+        let split_layout = serialize_split_node(
+            mgr.root(),
+            &self.buffer_metadata,
+            &self.root,
+            &self.terminal_buffers,
+            &terminal_indices,
+            mgr.labels(),
+        );
+
+        let active_buffers: HashMap<LeafId, BufferId> = mgr
+            .root()
+            .get_leaves_with_rects(ratatui::layout::Rect::default())
+            .into_iter()
+            .map(|(leaf_id, buffer_id, _)| (leaf_id, buffer_id))
+            .collect();
+
+        let mut split_states = HashMap::new();
+        for (leaf_id, view_state) in view_states {
+            let active_buffer = active_buffers.get(leaf_id).copied();
+            let serialized = serialize_split_view_state(
+                view_state,
+                self.buffers.as_map(),
+                &self.buffer_metadata,
+                &self.root,
+                active_buffer,
+                &self.terminal_buffers,
+                &terminal_indices,
+            );
+            split_states.insert(leaf_id.0 .0, serialized);
+        }
+
+        let file_explorer = if let Some(explorer) = self.file_explorer.as_ref() {
+            let expanded_dirs = get_expanded_dirs(explorer, &self.root);
+            FileExplorerState {
+                visible: self.file_explorer_visible,
+                width: self.file_explorer_width,
+                side: self.file_explorer_side,
+                expanded_dirs,
+                scroll_offset: explorer.get_scroll_offset(),
+                show_hidden: explorer.ignore_patterns().show_hidden(),
+                show_gitignored: explorer.ignore_patterns().show_gitignored(),
+            }
+        } else {
+            FileExplorerState {
+                visible: self.file_explorer_visible,
+                width: self.file_explorer_width,
+                side: self.file_explorer_side,
+                expanded_dirs: Vec::new(),
+                scroll_offset: 0,
+                show_hidden: false,
+                show_gitignored: false,
+            }
+        };
+
+        let cfg = &self.resources.config.editor;
+        let config_overrides = WorkspaceConfigOverrides {
+            line_numbers: Some(cfg.line_numbers),
+            relative_line_numbers: Some(cfg.relative_line_numbers),
+            line_wrap: Some(cfg.line_wrap),
+            syntax_highlighting: Some(cfg.syntax_highlighting),
+            enable_inlay_hints: Some(cfg.enable_inlay_hints),
+            mouse_enabled: Some(self.mouse_enabled),
+            menu_bar_hidden: None,
+        };
+
+        let histories = WorkspaceHistories {
+            search: self
+                .prompt_histories
+                .get("search")
+                .map(|h| h.items().to_vec())
+                .unwrap_or_default(),
+            replace: self
+                .prompt_histories
+                .get("replace")
+                .map(|h| h.items().to_vec())
+                .unwrap_or_default(),
+            command_palette: Vec::new(),
+            goto_line: self
+                .prompt_histories
+                .get("goto_line")
+                .map(|h| h.items().to_vec())
+                .unwrap_or_default(),
+            open_file: Vec::new(),
+        };
+
+        let search_options = SearchOptions {
+            case_sensitive: self.search_case_sensitive,
+            whole_word: self.search_whole_word,
+            use_regex: self.search_use_regex,
+            confirm_each: self.search_confirm_each,
+        };
+
+        let bookmarks = serialize_bookmarks(&self.bookmarks, &self.buffer_metadata, &self.root);
+
+        let external_files: Vec<PathBuf> = self
+            .buffer_metadata
+            .values()
+            .filter(|meta| !meta.hidden_from_tabs && !meta.is_virtual())
+            .filter_map(|meta| meta.file_path())
+            .filter(|abs_path| abs_path.strip_prefix(&self.root).is_err())
+            .cloned()
+            .collect();
+
+        let read_only_files: Vec<PathBuf> = self
+            .buffer_metadata
+            .values()
+            .filter(|meta| !meta.hidden_from_tabs && !meta.is_virtual())
+            .filter(|meta| meta.read_only)
+            .filter_map(|meta| meta.file_path().cloned())
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| {
+                p.strip_prefix(&self.root)
+                    .map(|rel| rel.to_path_buf())
+                    .unwrap_or(p)
+            })
+            .collect();
+
+        let unnamed_buffers: Vec<UnnamedBufferRef> = if self.resources.config.editor.hot_exit {
+            self.buffer_metadata
+                .iter()
+                .filter_map(|(buffer_id, meta)| {
+                    let path = meta.file_path()?;
+                    if !path.as_os_str().is_empty() {
+                        return None;
+                    }
+                    if meta.hidden_from_tabs || meta.is_virtual() {
+                        return None;
+                    }
+                    let state = self.buffers.get(buffer_id)?;
+                    if state.buffer.total_bytes() == 0 {
+                        return None;
+                    }
+                    let recovery_id = meta.recovery_id.clone()?;
+                    Some(UnnamedBufferRef {
+                        recovery_id,
+                        display_name: meta.display_name.clone(),
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        Workspace {
+            version: WORKSPACE_VERSION,
+            working_dir: self.root.clone(),
+            split_layout,
+            active_split_id: SplitId::from(mgr.active_split()).0,
+            split_states,
+            config_overrides,
+            file_explorer,
+            histories,
+            search_options,
+            bookmarks,
+            terminals,
+            external_files,
+            read_only_files,
+            unnamed_buffers,
+            plugin_global_state: HashMap::new(),
+            saved_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        }
     }
 }
 
