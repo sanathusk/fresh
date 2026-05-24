@@ -218,8 +218,10 @@ In order of leverage (✅ = landed on this branch):
 4. ✅ **Derive `working_dir` from `active_window().root`** (§2) — the
    field is deleted; the boot invariant is unconditional; the two
    batch-workspace functions no longer flip a `working_dir` copy.
-5. ⬜ **Workspace capture/restore as a per-window factory** (§10) — the
-   remaining cleanup; removes the `active_window`-flip dances entirely.
+5. 🟡 **Workspace capture/restore off the active-window flip** (§10) —
+   capture moved onto `Window` (done); restore stays editor-coupled
+   (opens files via `Editor::open_file`/LSP) and is parameterized by
+   `WindowId` to drop the flip (remaining).
 6. ⬜ **Unify the restore path** (§6) — first-run vs restart vs harness.
 
 Net effect on the branch/state matrix (✅ already realized):
@@ -257,64 +259,68 @@ helpers). To save/restore a *non-active* window, the two batch functions
 temporarily flip the global `active_window` pointer. That flip is a
 window-scoped operation faked with editor-global state.
 
-**Design:** express restore as **construction**, not seed-then-mutate.
+### Finding: capture is window-pure, restore is editor-coupled
 
-### `impl Window` — pure, rooted at `self.root` / `self.resources`
+Implementation surfaced an asymmetry:
+
+- **Capture (save) is pure window-read.** ✅ Moved:
+  `Window::capture_workspace(&self) -> Workspace` reads only the window's
+  own state + `self.resources` (no editor reach). `Editor::capture_workspace`
+  delegates and injects the editor-global `plugin_global_state`.
+
+- **Restore (apply) is editor-coupled and CANNOT be a pure `Window`
+  constructor.** Restoring opens files via
+  `open_workspace_files → open_file_internal → Editor::open_file`, which
+  pulls in **LSP attach, buffer allocation, grammar/syntax** — all
+  editor-level (LSP is editor-spawned, per-window). A
+  `Window::from_workspace(...)` constructor would require relocating the
+  whole file-open subsystem onto `Window`, which is out of scope and not
+  desirable. So **there is no `from_workspace` constructor.**
+
+### Revised restore-side plan: parameterize by `WindowId` (no flip)
+
+`apply_workspace` / `try_restore_workspace` stay on `Editor` but take an
+explicit target window instead of implicitly using the active one — that
+removes the active-pointer flip without moving the file-open machinery:
+
 ```rust
-/// Snapshot self into a Workspace (inverse of from_workspace). Pure read.
-pub(crate) fn capture_workspace(&self) -> Workspace;
+impl Window { pub(crate) fn capture_workspace(&self) -> Workspace; }   // DONE
 
-/// Construct a fully-restored window from a serialized workspace:
-/// split tree, open tabs, external_files, cursors/scroll, terminals,
-/// explorer state — all built from `root` + `resources`. Born in its
-/// final state; replaces `Window::new` + `apply_workspace`.
-pub(crate) fn from_workspace(
-    id: WindowId, label: String, root: PathBuf,
-    resources: WindowResources, ws: &Workspace,
-) -> Window;
-```
-The 18 `restore_*`/`open_workspace_files` helpers move here as private
-methods (they already only touch `self.buffers`/splits).
-
-### `impl Editor` — orchestration by explicit `WindowId` (no active flip)
-```rust
-pub fn save_workspace_for(&mut self, id: WindowId) -> Result<(), WorkspaceError>;
-pub fn restore_workspace_for(&mut self, id: WindowId) -> Result<bool, WorkspaceError>;
-// existing names stay as thin wrappers over the active window:
-pub fn save_workspace(&mut self)        -> Result<(), WorkspaceError> { self.save_workspace_for(self.active_window) }
-pub fn try_restore_workspace(&mut self) -> Result<bool, WorkspaceError> { self.restore_workspace_for(self.active_window) }
-// batch ops become plain loops — the flip dance is deleted:
-pub fn save_all_windows_workspaces(&mut self) -> Result<(), WorkspaceError>;   // for id in ids { save_workspace_for(id) }
-pub fn restore_inactive_window_workspaces(&mut self);                          // for id != active { restore_workspace_for(id) }
+impl Editor {
+    pub fn save_workspace_for(&mut self, id: WindowId) -> Result<(), WorkspaceError>;     // windows[id].capture_workspace() + disk + plugin_global
+    pub fn restore_workspace_for(&mut self, id: WindowId) -> Result<bool, WorkspaceError>; // apply into windows[id] via editor services
+    // existing names become thin active-window wrappers:
+    pub fn save_workspace(&mut self)        -> Result<(), WorkspaceError> { self.save_workspace_for(self.active_window) }
+    pub fn try_restore_workspace(&mut self) -> Result<bool, WorkspaceError> { self.restore_workspace_for(self.active_window) }
+    // batch ops become plain loops — the active_window flip is deleted:
+    pub fn save_all_windows_workspaces(&mut self) -> Result<(), WorkspaceError>;
+    pub fn restore_inactive_window_workspaces(&mut self);
+}
 ```
 
-### Two boundaries the constructor can't own (Editor does these around it)
-1. **hot-exit recovery** (unsaved buffer contents via `recovery_service`)
-   and **plugin_global_state** are editor-global. `from_workspace` builds
-   the pure layout; `restore_workspace_for` applies recovery / plugin
-   state *after* the window is handed back.
-2. **Lazy shells.** Inactive windows are built lazily today
-   (`Window::new`, `splits = None`, re-warm on first dive). Preserve that
-   by having a shell **hold its `Workspace`** and call `from_workspace`
-   on first activation — keeps the constructor *and* the laziness, rather
-   than eagerly rebuilding every persisted window at startup.
-
-### Sequencing in `editor_init`
-- Active window with a workspace file → `Window::from_workspace(...)`
-  instead of `Window::new(...)` + later `apply_workspace`.
-- Active window with none → `Window::new(...)` (clean seed).
-- Shells → `Window::new(...)` carrying their `Workspace`; `from_workspace`
-  on first dive.
+`restore_workspace_for(id)` threads `id` through the ~12 window-scoped
+restore helpers (`open_workspace_files`, `restore_split_node`,
+`restore_external_files`, `restore_terminals_from_workspace`,
+`restore_bookmarks_from_workspace`, `restore_file_explorer_settings`,
+`restore_search_options`, `restore_prompt_histories`,
+`apply_read_only_flags`, `clean_orphaned_buffers`, `log_restore_summary`,
+view-state restore) — changing `self.active_window()/active_window_mut()`
+to `self.windows.get(&id)/get_mut(&id)`. The editor-global steps
+(`restore_config_overrides`, `plugin_global_state`,
+`restore_hot_exit_changes`/`restore_unnamed_buffers` via `recovery_service`,
+the `buffer_activated` hook) stay where they are.
 
 ### Acceptance
-- `capture` / `from_workspace` are a clean inverse pair (round-trip test:
-  `from_workspace(capture(w))` reproduces the window's layout).
+- Round-trip property test (committed: `orchestrator_workspace_roundtrip`)
+  stays green — that is the de-risking gate.
 - `save_all_windows_workspaces` / `restore_inactive_window_workspaces`
   contain **no** `self.active_window = …` writes.
-- All existing `orchestrator_bringup_*` specs stay green, plus the
-  per-window workspace-restore test.
+- All existing `orchestrator_bringup_*` specs stay green.
 
-### Why deferred
-No correctness payoff (post-§2 the flip is transient and restored), and
-it rewrites the behavior-sensitive workspace path. Do it once the
-workspace path has per-window round-trip coverage to de-risk it.
+### Status / why the rest is deferred
+Save side (capture → `Window`) is **done**. The restore-side
+`WindowId`-parameterization removes the last flip but has **no
+correctness payoff** (post-§2 the flip is transient and restored) and
+threads an id through ~12 behavior-sensitive helpers. It's safe to do
+incrementally now that the round-trip property test guards it; deferred
+only by appetite for churn, not by risk of a missing safety net.
