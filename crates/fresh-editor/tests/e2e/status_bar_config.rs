@@ -273,6 +273,41 @@ fn test_remote_indicator_placed_at_far_left() {
     );
 }
 
+/// Right-side status bar elements must be separated by " | ".
+///
+/// Regression test for issue #2088: the right-side rendering loop was missing
+/// the ` | ` separator that the left side already applied, so elements like
+/// Encoding and Language appeared concatenated (e.g. "LF UTF-8 Rust").
+#[test]
+fn test_right_side_separators() {
+    let config = config_with_status_bar(
+        vec![StatusBarElement::Filename, StatusBarElement::Cursor],
+        vec![
+            StatusBarElement::LineEnding,
+            StatusBarElement::Encoding,
+            StatusBarElement::Language,
+        ],
+    );
+
+    let mut harness = EditorTestHarness::with_temp_project_and_config(120, 30, config).unwrap();
+
+    let dir = harness.project_dir().unwrap();
+    let file = dir.join("test.rs");
+    fs::write(&file, "fn main() {}\n").unwrap();
+    harness.open_file(&file).unwrap();
+    harness.render().unwrap();
+
+    let status = harness.get_status_bar();
+    // Find the right-side "LF" line-ending indicator.
+    // Before the fix, right-side elements were concatenated without separators
+    // (e.g. "LF ASCII Rust"). After the fix, a `|` appears between them.
+    let lf_pos = status.rfind("LF").expect("LF should appear in status bar");
+    assert!(
+        status[lf_pos..].contains('|'),
+        "A '|' separator should appear between right-side elements.\nStatus bar: {status}"
+    );
+}
+
 /// Both empty sides should still render a valid (blank) status bar without
 /// crashing.
 #[test]
