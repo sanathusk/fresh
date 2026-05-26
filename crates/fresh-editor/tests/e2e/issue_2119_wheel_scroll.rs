@@ -346,3 +346,95 @@ fn git_log_commit_list_scrolls_with_wheel() {
          (top commit should change from {top_before}). Screen:\n{after}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Keyboard navigation after a wheel scroll must re-reveal the selection
+// ---------------------------------------------------------------------------
+
+/// In Live Grep, after the result list is wheel-scrolled so the selected
+/// result is off-screen, the next keyboard navigation (Down) must scroll the
+/// list so the (newly) selected result is visible again.
+#[test]
+fn live_grep_keyboard_nav_scrolls_selection_back_into_view() {
+    let mut harness = open_live_grep_with_results(160, 40, 60);
+
+    // Selection starts on the first result.
+    let initial = harness.screen_to_string();
+    assert!(
+        initial.contains("match_00.txt"),
+        "first result should be visible initially. Screen:\n{initial}"
+    );
+
+    // Wheel the results down until the selected result (match_00) scrolls off.
+    for _ in 0..5 {
+        harness.mouse_scroll_down(10, 12).unwrap();
+    }
+    settle(&mut harness);
+    let scrolled = harness.screen_to_string();
+    assert!(
+        !scrolled.contains("match_00.txt"),
+        "precondition: the selected result should have scrolled out of view. \
+         Screen:\n{scrolled}"
+    );
+
+    // Keyboard Down moves the selection (0 → 1) and must bring it back in view.
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    settle(&mut harness);
+    let after = harness.screen_to_string();
+    assert!(
+        after.contains("match_01.txt"),
+        "keyboard navigation after a wheel scroll should scroll the selected \
+         result back into view. Screen:\n{after}"
+    );
+}
+
+/// In the File Explorer, after the tree is wheel-scrolled so the selected
+/// entry is off-screen, the next keyboard navigation (Down) must scroll the
+/// view so the (newly) selected entry is visible again (its `▌` cursor shows).
+#[test]
+fn file_explorer_keyboard_nav_scrolls_selection_back_into_view() {
+    let mut harness = EditorTestHarness::with_temp_project(100, 30).unwrap();
+    let project_root = harness.project_dir().unwrap();
+    for i in 0..60 {
+        fs::write(project_root.join(format!("file_{i:02}.txt")), "x").unwrap();
+    }
+
+    harness.editor_mut().focus_file_explorer();
+    harness.wait_for_file_explorer().unwrap();
+    harness.wait_for_file_explorer_item("file_00.txt").unwrap();
+
+    // Select an entry near the top of the list.
+    for _ in 0..5 {
+        harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    }
+    harness.render().unwrap();
+    let selected = token_on_line_with(&harness.screen_to_string(), "▌", "file_")
+        .expect("an entry should be selected before scrolling");
+
+    // Wheel the explorer down until the selected entry scrolls off the top
+    // (its `▌` cursor is no longer drawn).
+    for _ in 0..10 {
+        harness.mouse_scroll_down(3, 8).unwrap();
+    }
+    harness.render().unwrap();
+    assert!(
+        token_on_line_with(&harness.screen_to_string(), "▌", "file_").is_none(),
+        "precondition: the selected entry should have scrolled out of view. \
+         Screen:\n{}",
+        harness.screen_to_string()
+    );
+
+    // Keyboard Down moves the selection and must scroll it back into view.
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    harness.render().unwrap();
+    let after = harness.screen_to_string();
+    let selected_after = token_on_line_with(&after, "▌", "file_").unwrap_or_else(|| {
+        panic!(
+            "keyboard navigation should scroll the selected entry back into view. Screen:\n{after}"
+        )
+    });
+    assert_ne!(
+        selected_after, selected,
+        "selection should have advanced by one entry (was {selected})"
+    );
+}

@@ -133,6 +133,9 @@ impl InputHandler for Prompt {
             // hardcoded prompt type checks here. This would make the suggestion UI more flexible
             // and allow custom handling for any prompt type without modifying this code.
             KeyCode::Up => {
+                // Keyboard navigation re-engages keep-selection-visible
+                // scrolling after a mouse-wheel scroll of the list (#2119).
+                self.manual_scroll = false;
                 if !self.suggestions.is_empty() {
                     // Don't wrap around - stay at 0 if already at the beginning
                     if let Some(selected) = self.selected_suggestion {
@@ -178,6 +181,7 @@ impl InputHandler for Prompt {
                 InputResult::Consumed
             }
             KeyCode::Down => {
+                self.manual_scroll = false;
                 if !self.suggestions.is_empty() {
                     // Don't wrap around - stay at end if already at the last item
                     if let Some(selected) = self.selected_suggestion {
@@ -223,12 +227,14 @@ impl InputHandler for Prompt {
                 InputResult::Consumed
             }
             KeyCode::PageUp => {
+                self.manual_scroll = false;
                 if let Some(selected) = self.selected_suggestion {
                     self.selected_suggestion = Some(selected.saturating_sub(10));
                 }
                 InputResult::Consumed
             }
             KeyCode::PageDown => {
+                self.manual_scroll = false;
                 if let Some(selected) = self.selected_suggestion {
                     let len = self.suggestions.len();
                     let new_pos = selected + 10;
