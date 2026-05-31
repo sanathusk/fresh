@@ -132,6 +132,7 @@ pub mod movement;
 pub mod multi_file_opening;
 pub mod multibyte_characters;
 pub mod multicursor;
+pub mod occurrence_highlight;
 pub mod on_save_actions;
 pub mod open_folder;
 pub mod orchestrator_dock;
