@@ -11,7 +11,11 @@ use std::fs;
 /// Helper: create a config with the given status bar elements.
 fn config_with_status_bar(left: Vec<StatusBarElement>, right: Vec<StatusBarElement>) -> Config {
     let mut config = Config::default();
-    config.editor.status_bar = StatusBarConfig { left, right };
+    config.editor.status_bar = StatusBarConfig {
+        left,
+        right,
+        ..StatusBarConfig::default()
+    };
     config
 }
 
@@ -305,6 +309,66 @@ fn test_right_side_separators() {
     assert!(
         status[lf_pos..].contains('|'),
         "A '|' separator should appear between right-side elements.\nStatus bar: {status}"
+    );
+}
+
+/// A custom `separator` config value is used verbatim between elements on
+/// both sides (here a right-side check using `" :: "`).
+#[test]
+fn test_custom_separator() {
+    let mut config = config_with_status_bar(
+        vec![StatusBarElement::Filename, StatusBarElement::Cursor],
+        vec![StatusBarElement::LineEnding, StatusBarElement::Encoding],
+    );
+    config.editor.status_bar.separator = " :: ".to_string();
+
+    let mut harness = EditorTestHarness::with_temp_project_and_config(120, 30, config).unwrap();
+    let dir = harness.project_dir().unwrap();
+    let file = dir.join("test.rs");
+    fs::write(&file, "fn main() {}\n").unwrap();
+    harness.open_file(&file).unwrap();
+    harness.render().unwrap();
+
+    let status = harness.get_status_bar();
+    let lf_pos = status.rfind("LF").expect("LF should appear in status bar");
+    assert!(
+        status[lf_pos..].contains("::"),
+        "The custom '::' separator should appear between right-side elements.\nStatus bar: {status}"
+    );
+    assert!(
+        !status.contains('|'),
+        "The default '|' separator should not appear when overridden.\nStatus bar: {status}"
+    );
+}
+
+/// An empty `separator` disables separators entirely: elements are adjacent
+/// and no separator (and no separator space) is drawn.
+#[test]
+fn test_empty_separator_has_no_separator() {
+    let mut config = config_with_status_bar(
+        vec![StatusBarElement::Filename, StatusBarElement::Cursor],
+        vec![StatusBarElement::LineEnding, StatusBarElement::Encoding],
+    );
+    config.editor.status_bar.separator = String::new();
+
+    let mut harness = EditorTestHarness::with_temp_project_and_config(120, 30, config).unwrap();
+    let dir = harness.project_dir().unwrap();
+    let file = dir.join("test.rs");
+    fs::write(&file, "fn main() {}\n").unwrap();
+    harness.open_file(&file).unwrap();
+    harness.render().unwrap();
+
+    let status = harness.get_status_bar();
+    assert!(
+        !status.contains('|'),
+        "No '|' separator should be drawn when separator is empty.\nStatus bar: {status}"
+    );
+    // With an empty separator, elements carry no spacing of their own either,
+    // so LineEnding and Encoding render fully adjacent ("LFASCII"). The default
+    // separator would render "LF | ASCII".
+    assert!(
+        status.contains("LFASCII"),
+        "Empty separator should leave right-side elements fully adjacent.\nStatus bar: {status}"
     );
 }
 

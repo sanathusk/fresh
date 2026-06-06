@@ -1006,11 +1006,11 @@ impl StatusBarRenderer {
                 })
             }
             StatusBarElement::LineEnding => Some(RenderedElement {
-                text: format!(" {} ", ctx.state.buffer.line_ending().display_name()),
+                text: ctx.state.buffer.line_ending().display_name().to_string(),
                 kind: ElementKind::LineEnding,
             }),
             StatusBarElement::Encoding => Some(RenderedElement {
-                text: format!(" {} ", ctx.state.buffer.encoding().display_name()),
+                text: ctx.state.buffer.encoding().display_name().to_string(),
                 kind: ElementKind::Encoding,
             }),
             StatusBarElement::Language => {
@@ -1019,9 +1019,9 @@ impl StatusBarRenderer {
                     && ctx.state.display_name != "Plain Text"
                     && ctx.state.display_name != "text"
                 {
-                    format!(" {} [syntax only] ", &ctx.state.display_name)
+                    format!("{} [syntax only]", &ctx.state.display_name)
                 } else {
-                    format!(" {} ", &ctx.state.display_name)
+                    ctx.state.display_name.to_string()
                 };
                 Some(RenderedElement {
                     text,
@@ -1033,7 +1033,7 @@ impl StatusBarRenderer {
                     return None;
                 }
                 Some(RenderedElement {
-                    text: format!(" {} ", ctx.lsp_status),
+                    text: ctx.lsp_status.to_string(),
                     kind: ElementKind::Lsp,
                 })
             }
@@ -1042,14 +1042,14 @@ impl StatusBarRenderer {
                     return None;
                 }
                 Some(RenderedElement {
-                    text: format!(" [\u{26a0} {}] ", ctx.general_warning_count),
+                    text: format!("[\u{26a0} {}]", ctx.general_warning_count),
                     kind: ElementKind::WarningBadge,
                 })
             }
             StatusBarElement::Update => {
                 let version = ctx.update_available?;
                 Some(RenderedElement {
-                    text: format!(" {} ", t!("status.update_available", version = version)),
+                    text: t!("status.update_available", version = version).to_string(),
                     kind: ElementKind::Update,
                 })
             }
@@ -1062,7 +1062,7 @@ impl StatusBarRenderer {
                     )
                     .unwrap_or_else(|| "?".to_string());
                 Some(RenderedElement {
-                    text: format!(" {} ", t!("status.palette", shortcut = shortcut)),
+                    text: t!("status.palette", shortcut = shortcut).to_string(),
                     kind: ElementKind::Palette,
                 })
             }
@@ -1085,14 +1085,14 @@ impl StatusBarRenderer {
                 // derived state. The override carries its own label;
                 // derived states synthesize one from `remote_connection`.
                 let (text, state) = if let Some(over) = ctx.remote_state_override {
-                    (format!(" {} ", over.label()), over.state())
+                    (over.label(), over.state())
                 } else {
                     match ctx.remote_connection {
-                        None => (" Local ".to_string(), RemoteIndicatorState::Local),
+                        None => ("Local".to_string(), RemoteIndicatorState::Local),
                         Some(conn) if conn.contains("(Disconnected)") => {
-                            (format!(" {} ", conn), RemoteIndicatorState::Disconnected)
+                            (conn.to_string(), RemoteIndicatorState::Disconnected)
                         }
-                        Some(conn) => (format!(" {} ", conn), RemoteIndicatorState::Connected),
+                        Some(conn) => (conn.to_string(), RemoteIndicatorState::Connected),
                     }
                 };
                 Some(RenderedElement {
@@ -1396,8 +1396,10 @@ impl StatusBarRenderer {
         let left_items = Self::render_side(&config.left, ctx);
         let mut right_items = Self::render_side(&config.right, ctx);
 
-        const SEPARATOR: &str = " | ";
-        let separator_width = str_width(SEPARATOR);
+        // Separator drawn between elements, used verbatim from config.
+        // An empty value disables separators and consumes no width.
+        let separator: &str = &config.separator;
+        let separator_width = str_width(separator);
 
         // Reserve a sane minimum for the left side so the buffer name and
         // cursor position aren't truncated to a single character on narrow
@@ -1452,7 +1454,7 @@ impl StatusBarRenderer {
                 break;
             }
             if sep_width > 0 {
-                spans.push(Span::styled(SEPARATOR, base_style));
+                spans.push(Span::styled(separator.to_string(), base_style));
                 used_left += sep_width;
             }
 
@@ -1521,8 +1523,8 @@ impl StatusBarRenderer {
 
         let mut current_col = area.x + col_offset as u16;
         for (idx, (item_spans, width, kind)) in right_items.into_iter().enumerate() {
-            if idx > 0 {
-                spans.push(Span::styled(SEPARATOR, base_style));
+            if idx > 0 && separator_width > 0 {
+                spans.push(Span::styled(separator.to_string(), base_style));
                 current_col += separator_width as u16;
             }
             Self::update_layout_for_element(

@@ -738,6 +738,18 @@ pub struct StatusBarConfig {
     #[serde(default = "default_status_bar_right")]
     #[schemars(extend("x-section" = "Status Bar", "x-dual-list-sibling" = "/editor/status_bar/left", "x-dynamically-extendable-status-bar-elements" = true))]
     pub right: Vec<StatusBarElement>,
+
+    /// Separator drawn between status bar elements on both sides, used
+    /// verbatim. Include surrounding spaces if you want them — the default
+    /// `" | "` already does. An empty string disables separators entirely
+    /// (no space is consumed).
+    #[serde(default = "default_status_bar_separator")]
+    #[schemars(extend("x-section" = "Status Bar"))]
+    pub separator: String,
+}
+
+fn default_status_bar_separator() -> String {
+    " | ".to_string()
 }
 
 impl Default for StatusBarConfig {
@@ -745,6 +757,7 @@ impl Default for StatusBarConfig {
         Self {
             left: default_status_bar_left(),
             right: default_status_bar_right(),
+            separator: default_status_bar_separator(),
         }
     }
 }
