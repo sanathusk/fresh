@@ -1414,10 +1414,10 @@ impl StatusBarRenderer {
         let separator: &str = &config.separator;
         let separator_width = str_width(separator);
         // The separator glyph is colored by the theme's dedicated separator
-        // keys so it can be dimmed against the bar; bg stays the bar bg.
+        // keys so it can be dimmed against the bar; both fall back to the bar.
         let separator_style = Style::default()
-            .fg(ctx.theme.help_separator_fg)
-            .bg(ctx.theme.status_bar_bg);
+            .fg(ctx.theme.status_separator_fg)
+            .bg(ctx.theme.status_separator_bg);
 
         // Reserve a sane minimum for the left side so the buffer name and
         // cursor position aren't truncated to a single character on narrow
@@ -2169,6 +2169,40 @@ mod tests {
         assert_ne!(theme.status_palette_bg, theme.status_bar_bg);
         assert_ne!(theme.status_lsp_on_fg, theme.status_bar_fg);
         assert_ne!(theme.status_lsp_on_bg, theme.status_bar_bg);
+    }
+
+    #[test]
+    fn test_status_separator_keys_default_and_override() {
+        // The separator glyph is painted by dedicated theme keys so it can
+        // be dimmed against the bar. By default both resolve to the
+        // status-bar palette, keeping the bar a single continuous color.
+        let theme = crate::view::theme::Theme::from_json(
+            r#"{"name":"t","editor":{},"ui":{},"search":{},"diagnostic":{},"syntax":{}}"#,
+        )
+        .expect("minimal theme should parse");
+        assert_eq!(theme.status_separator_fg, theme.status_bar_fg);
+        assert_eq!(theme.status_separator_bg, theme.status_bar_bg);
+
+        // A theme that sets only the separator keys repaints the glyph
+        // without touching the rest of the bar.
+        let theme = crate::view::theme::Theme::from_json(
+            r#"{
+                "name":"t",
+                "editor":{},
+                "ui":{
+                    "status_bar_fg":"White",
+                    "status_bar_bg":"DarkGray",
+                    "status_separator_fg":"Gray",
+                    "status_separator_bg":"Black"
+                },
+                "search":{},
+                "diagnostic":{},
+                "syntax":{}
+            }"#,
+        )
+        .expect("theme should parse");
+        assert_ne!(theme.status_separator_fg, theme.status_bar_fg);
+        assert_ne!(theme.status_separator_bg, theme.status_bar_bg);
     }
 
     #[test]
