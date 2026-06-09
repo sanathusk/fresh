@@ -193,8 +193,12 @@ pub fn render_workspace_trust_dialog(
                 r,
                 Line::from(Span::styled(
                     format!(" ⚠  {}", t!("trust.dialog.security_warning")),
+                    // Title shares the dialog's own border/separator accent
+                    // (`popup_border_fg`) so the whole frame reads as one
+                    // coherent palette, rather than borrowing the status-bar
+                    // warning colour from an unrelated component.
                     Style::default()
-                        .fg(theme.status_warning_indicator_fg)
+                        .fg(theme.popup_border_fg)
                         .bg(bg)
                         .add_modifier(Modifier::BOLD),
                 )),
