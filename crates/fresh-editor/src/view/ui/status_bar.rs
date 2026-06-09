@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::app::types::CellThemeRecorder;
 use crate::app::WarningLevel;
 use crate::config::{StatusBarConfig, StatusBarElement};
 use crate::primitives::display_width::{char_width, str_width};
@@ -678,8 +679,9 @@ impl StatusBarRenderer {
         area: Rect,
         ctx: &mut StatusBarContext<'_>,
         config: &StatusBarConfig,
+        rec: Option<&mut CellThemeRecorder>,
     ) -> StatusBarLayout {
-        Self::render_status(frame, area, ctx, config)
+        Self::render_status(frame, area, ctx, config, rec)
     }
 
     /// Render the prompt/minibuffer
@@ -1350,6 +1352,54 @@ impl StatusBarRenderer {
         }
     }
 
+    /// The (fg, bg) theme-key strings an element paints with — its non-hover
+    /// provenance for the theme inspector, mirroring `element_style`. Hover is
+    /// transient so the recorded key is always the element's semantic key.
+    fn element_keys(
+        kind: ElementKind,
+        lsp_state: LspIndicatorState,
+    ) -> (&'static str, &'static str) {
+        match kind {
+            ElementKind::Normal
+            | ElementKind::Messages
+            | ElementKind::Clock
+            | ElementKind::Custom
+            | ElementKind::LineEnding
+            | ElementKind::Encoding
+            | ElementKind::Language => ("ui.status_bar_fg", "ui.status_bar_bg"),
+            ElementKind::RemoteDisconnected => (
+                "ui.status_error_indicator_fg",
+                "ui.status_error_indicator_bg",
+            ),
+            ElementKind::Lsp => match lsp_state {
+                LspIndicatorState::Error => ("diagnostic.error_fg", "diagnostic.error_bg"),
+                LspIndicatorState::Off => {
+                    ("ui.status_lsp_actionable_fg", "ui.status_lsp_actionable_bg")
+                }
+                LspIndicatorState::On => ("ui.status_lsp_on_fg", "ui.status_lsp_on_bg"),
+                LspIndicatorState::OffDismissed | LspIndicatorState::None => {
+                    ("ui.status_bar_fg", "ui.status_bar_bg")
+                }
+            },
+            ElementKind::WarningBadge => (
+                "ui.status_warning_indicator_fg",
+                "ui.status_warning_indicator_bg",
+            ),
+            ElementKind::Update => ("ui.menu_highlight_fg", "ui.menu_dropdown_bg"),
+            ElementKind::Palette => ("ui.status_palette_fg", "ui.status_palette_bg"),
+            ElementKind::RemoteIndicator(state) => match state {
+                RemoteIndicatorState::Connecting | RemoteIndicatorState::Connected => {
+                    ("ui.help_indicator_fg", "ui.help_indicator_bg")
+                }
+                RemoteIndicatorState::FailedAttach | RemoteIndicatorState::Disconnected => (
+                    "ui.status_error_indicator_fg",
+                    "ui.status_error_indicator_bg",
+                ),
+                RemoteIndicatorState::Local => ("ui.status_bar_fg", "ui.status_bar_bg"),
+            },
+        }
+    }
+
     /// Map a rendered element to the layout field(s) it should populate.
     /// Built-in indicators get their dedicated `Option<(row, start_col,
     /// end_col)>` slot. Plugin tokens (`ElementKind::Custom` carrying a
@@ -1494,6 +1544,7 @@ impl StatusBarRenderer {
         area: Rect,
         ctx: &mut StatusBarContext<'_>,
         config: &StatusBarConfig,
+        mut rec: Option<&mut CellThemeRecorder>,
     ) -> StatusBarLayout {
         let mut layout = StatusBarLayout::default();
         let base_style = Style::default()
@@ -1503,6 +1554,21 @@ impl StatusBarRenderer {
 
         if available_width == 0 || area.height == 0 {
             return layout;
+        }
+
+        // Lay down the bar's base keys across the whole row so padding / gaps
+        // resolve to the status bar; each element below overwrites its own
+        // cells with their specific keys as it's emitted.
+        let lsp_state = ctx.lsp_indicator_state;
+        if let Some(r) = rec.as_deref_mut() {
+            r.run(
+                area.x,
+                area.y,
+                area.width,
+                Some("ui.status_bar_fg"),
+                Some("ui.status_bar_bg"),
+                "Status Bar",
+            );
         }
 
         // Tell the per-element renderer whether the dedicated
@@ -1581,6 +1647,16 @@ impl StatusBarRenderer {
                 break;
             }
             if sep_width > 0 {
+                if let Some(r) = rec.as_deref_mut() {
+                    r.run(
+                        area.x + used_left as u16,
+                        area.y,
+                        sep_width as u16,
+                        Some("ui.status_separator_fg"),
+                        Some("ui.status_separator_bg"),
+                        "Status Bar",
+                    );
+                }
                 spans.push(Span::styled(separator.to_string(), separator_style));
                 used_left += sep_width;
             }
@@ -1591,6 +1667,18 @@ impl StatusBarRenderer {
             if width <= remaining {
                 spans.extend(item_spans);
                 used_left += width;
+
+                if let Some(r) = rec.as_deref_mut() {
+                    let (fg, bg) = Self::element_keys(kind, lsp_state);
+                    r.run(
+                        area.x + start_col as u16,
+                        area.y,
+                        width as u16,
+                        Some(fg),
+                        Some(bg),
+                        "Status Bar",
+                    );
+                }
 
                 Self::update_layout_for_element(
                     &mut layout,
@@ -1615,6 +1703,18 @@ impl StatusBarRenderer {
                     ctx.lsp_indicator_state,
                 );
                 spans.push(Span::styled(truncated, overflow_style));
+
+                if let Some(r) = rec.as_deref_mut() {
+                    let (fg, bg) = Self::element_keys(kind, lsp_state);
+                    r.run(
+                        area.x + start_col as u16,
+                        area.y,
+                        truncated_width as u16,
+                        Some(fg),
+                        Some(bg),
+                        "Status Bar",
+                    );
+                }
                 used_left += truncated_width;
 
                 Self::update_layout_for_element(
@@ -1653,8 +1753,29 @@ impl StatusBarRenderer {
         let mut current_col = area.x + col_offset as u16;
         for (idx, (item_spans, width, kind, token_key)) in right_items.into_iter().enumerate() {
             if idx > 0 && separator_width > 0 {
+                if let Some(r) = rec.as_deref_mut() {
+                    r.run(
+                        current_col,
+                        area.y,
+                        separator_width as u16,
+                        Some("ui.status_separator_fg"),
+                        Some("ui.status_separator_bg"),
+                        "Status Bar",
+                    );
+                }
                 spans.push(Span::styled(separator.to_string(), separator_style));
                 current_col += separator_width as u16;
+            }
+            if let Some(r) = rec.as_deref_mut() {
+                let (fg, bg) = Self::element_keys(kind, lsp_state);
+                r.run(
+                    current_col,
+                    area.y,
+                    width as u16,
+                    Some(fg),
+                    Some(bg),
+                    "Status Bar",
+                );
             }
             Self::update_layout_for_element(
                 &mut layout,

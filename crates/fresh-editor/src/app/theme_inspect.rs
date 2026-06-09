@@ -158,21 +158,7 @@ impl Editor {
 
         let sw = self.active_chrome().last_frame_width as usize;
 
-        // Status bar
-        if let Some((row, x, width)) = self.active_chrome().status_bar_area {
-            let info = CellThemeInfo {
-                fg_key: Some("ui.status_bar_fg".into()),
-                bg_key: Some("ui.status_bar_bg".into()),
-                region: "Status Bar".into(),
-                syntax_category: None,
-            };
-            for col in x..x + width {
-                let idx = row as usize * sw + col as usize;
-                if let Some(cell) = self.active_chrome_mut().cell_theme_map.get_mut(idx) {
-                    *cell = info.clone();
-                }
-            }
-        }
+        // Status bar is recorded during paint (see status_bar.rs).
 
         // Menu bar
         if let Some(bar_area) = self

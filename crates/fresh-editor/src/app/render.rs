@@ -1032,6 +1032,9 @@ impl Editor {
             // Single window borrow, split into buffers + cursors so the
             // status-bar context can hold both.
             let __active_id = self.active_window;
+            // Theme-key runs the status bar records as it paints; applied to
+            // the chrome's cell map after the window borrow is released.
+            let mut status_bar_runs: Vec<crate::app::types::ThemeRun> = Vec::new();
             let __win = self
                 .windows
                 .get_mut(&__active_id)
@@ -1071,14 +1074,18 @@ impl Editor {
                         dynamic_status_bar_elements: dynamic_status_bar_elements.clone(),
                         workspace_trust_level,
                     };
+                    let mut sb_rec =
+                        crate::app::types::CellThemeRecorder::new(&mut status_bar_runs);
                     StatusBarRenderer::render_status_bar(
                         frame,
                         main_chunks[status_bar_idx],
                         &mut status_ctx,
                         &self.config.editor.status_bar,
+                        Some(&mut sb_rec),
                     )
                 })
                 .expect("active buffer must be present");
+            self.active_chrome_mut().apply_theme_runs(&status_bar_runs);
 
             // Store status bar layout for click detection
             let status_bar_area = main_chunks[status_bar_idx];

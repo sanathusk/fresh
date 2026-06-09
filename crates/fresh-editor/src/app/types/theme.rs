@@ -18,6 +18,57 @@ pub struct CellThemeInfo {
     pub syntax_category: Option<std::borrow::Cow<'static, str>>,
 }
 
+/// One horizontal run of cells a chrome renderer painted with a known set of
+/// theme keys, captured *as it paints*. Renderers collect these into a fresh
+/// `Vec` (sidestepping any borrow of the per-cell map / the window) and the
+/// caller applies them via [`ChromeLayout::apply_theme_runs`] once its own
+/// borrows are released. Keys are `&'static str` (all chrome keys are literals).
+#[derive(Debug, Clone, Copy)]
+pub struct ThemeRun {
+    pub x: u16,
+    pub y: u16,
+    pub w: u16,
+    pub fg_key: Option<&'static str>,
+    pub bg_key: Option<&'static str>,
+    pub region: &'static str,
+}
+
+/// Collects [`ThemeRun`]s during a chrome region's paint. Threaded as
+/// `Option<&mut CellThemeRecorder>` so recording is opt-in (the inspector
+/// wants it; offscreen/test renders pass `None`).
+pub struct CellThemeRecorder<'a> {
+    runs: &'a mut Vec<ThemeRun>,
+}
+
+impl<'a> CellThemeRecorder<'a> {
+    pub fn new(runs: &'a mut Vec<ThemeRun>) -> Self {
+        Self { runs }
+    }
+
+    /// Record a horizontal run of `w` cells starting at screen `(x, y)`.
+    pub fn run(
+        &mut self,
+        x: u16,
+        y: u16,
+        w: u16,
+        fg_key: Option<&'static str>,
+        bg_key: Option<&'static str>,
+        region: &'static str,
+    ) {
+        if w == 0 {
+            return;
+        }
+        self.runs.push(ThemeRun {
+            x,
+            y,
+            w,
+            fg_key,
+            bg_key,
+            region,
+        });
+    }
+}
+
 /// Information about which theme key(s) style a specific screen position.
 /// Used by the Ctrl+Right-Click theme inspector popup.
 #[derive(Debug, Clone)]
