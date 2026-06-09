@@ -40,6 +40,32 @@ backend-opaque (`AUTHORITY_DESIGN.md` principle 3). The profile is set
 wherever a backend/trust/env is installed and is the *source of truth* for
 restoration; the live `Authority` is derived from it.
 
+### Restoring agent terminals: the *restore command*
+
+Bringing a session's backend back is not enough for an **agent** session
+(`claude`, `aider`, …): its seed terminal ran a process that is gone, and
+re-opening a bare shell loses the agent. So each terminal carries an
+optional **restore command** — the argv to re-run on restore — which is
+deliberately **not** the launch argv:
+
+- The **launch command** is what spawned the PTY (often just a shell, or
+  `claude`).
+- The **restore command** is *how to bring this terminal back*, and it is
+  **mutable**: set at create time (defaulting to the launch argv) and
+  **updated while the terminal runs** — e.g. once the agent knows its
+  session id it sets `claude --resume <id>`. A plugin op
+  (`setTerminalRestoreCommand(terminalId, argv)`) writes it; the orchestrator
+  / agent plugin owns the policy.
+
+Persisted per terminal (in the workspace file's terminal entries, alongside
+cwd/scrollback). On restore the terminal resumes under the existing
+focus-to-resume model (it is *not* auto-re-executed in the background): when
+the user focuses a restored terminal that has a restore command, it spawns
+that command instead of the default shell. A terminal with no restore
+command behaves as today (shell + read-only scrollback). For remote sessions
+the existing `RemoteAgentSpec.command` is just the seed terminal's initial
+restore command.
+
 ## Lifecycle: Live vs Dormant
 
 Each session's authority is in one of two states:
