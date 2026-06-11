@@ -666,6 +666,12 @@ pub fn count_visual_rows_for_text_with_soft_breaks(
             // than panic.
             continue;
         }
+        if !line_text.is_char_boundary(rel) {
+            // Stale break list: an edit earlier in the line shifted
+            // the text under positions computed against the old
+            // content, so the offset can land mid-char.
+            continue;
+        }
         let segment = &line_text[prev_end..rel];
         total = total.saturating_add(count_segment_rows_with_indent(
             segment,
