@@ -136,8 +136,17 @@ impl Editor {
         // Using the regular `open_file` path keeps all cross-cutting concerns
         // (LSP, language detection, split targeting, status message, plugin
         // hooks) consistent with a normal open.
+        //
+        // `opening_as_preview` additionally tells the inner open path that
+        // this is a browse, not a deliberate open, so the `after_file_open`
+        // plugin hook is skipped — otherwise plugins raise intrusive UI
+        // (e.g. the asm-lsp `.asm-lsp.toml` config-offer popup) over each
+        // file the user arrows past. Set and cleared around the call so a
+        // failed open can't leave the flag stuck.
         self.active_window_mut().suppress_position_history_once = true;
+        self.active_window_mut().opening_as_preview = true;
         let open_result = self.open_file(path);
+        self.active_window_mut().opening_as_preview = false;
         self.active_window_mut().suppress_position_history_once = false;
         let buffer_id = open_result?;
         let is_new = !previously_file_backed.contains(&buffer_id);

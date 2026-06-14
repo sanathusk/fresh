@@ -261,6 +261,15 @@ pub struct Window {
     /// to leave a trail entry for the about-to-be-loaded file).
     pub suppress_position_history_once: bool,
 
+    /// Set while a file is being opened as a *preview* (file-explorer
+    /// browse, live-grep overlay) rather than a deliberate open. The
+    /// `after_file_open` plugin hook is skipped while this is set, so
+    /// plugins don't raise intrusive UI (e.g. the asm-lsp config-offer
+    /// popup) or run side effects over a file the user is merely
+    /// glancing at as previews replace each other. Set/cleared
+    /// synchronously around the inner open call; never persisted.
+    pub opening_as_preview: bool,
+
     /// Bookmarks (single-char register → buffer + byte position) for
     /// this window. Bookmarks point at this window's buffers and
     /// follow the window across `setActiveWindow` switches — every
@@ -1777,6 +1786,7 @@ impl Window {
             position_history: crate::input::position_history::PositionHistory::new(),
             in_navigation: false,
             suppress_position_history_once: false,
+            opening_as_preview: false,
             bookmarks: crate::app::bookmarks::BookmarkState::default(),
             grouped_subtrees: HashMap::new(),
             composite_buffers: HashMap::new(),

@@ -832,7 +832,14 @@ impl crate::app::window::Window {
     /// results. This variant always allocates a fresh BufferId so the
     /// background buffer never gets repurposed.
     pub(crate) fn open_file_for_preview(&mut self, path: &Path) -> anyhow::Result<BufferId> {
-        self.open_file_no_focus_inner(path, false)
+        // Live-grep preview is a browse, not a deliberate open: suppress the
+        // `after_file_open` plugin hook so plugins don't pop UI / run side
+        // effects over each result the user cycles through. Cleared
+        // unconditionally so an error can't leave the flag stuck.
+        self.opening_as_preview = true;
+        let result = self.open_file_no_focus_inner(path, false);
+        self.opening_as_preview = false;
+        result
     }
 
     /// True if `path` is an internal app artifact (terminal scrollback,
@@ -1160,14 +1167,24 @@ impl crate::app::window::Window {
         // Track file for auto-revert and conflict detection
         self.watch_file(path);
 
-        // Fire AfterFileOpen hook for plugins
-        self.resources.plugin_manager.read().unwrap().run_hook(
-            "after_file_open",
-            crate::services::plugins::hooks::HookArgs::AfterFileOpen {
-                buffer_id,
-                path: path.to_path_buf(),
-            },
-        );
+        // Fire AfterFileOpen hook for plugins — but not for preview opens
+        // (file-explorer browse, live-grep overlay). A preview is "just
+        // looking": firing this hook lets plugins raise intrusive UI (e.g.
+        // the asm-lsp config-offer popup) or run side effects (csharp
+        // `dotnet restore`) over a file the user is merely glancing at as
+        // previews replace each other. Deliberate opens (Ctrl+P, double-
+        // click, Enter) go through the non-preview path and still fire it.
+        // Plugins that need to react when a preview becomes visible use
+        // `buffer_activated`, which still fires on every preview switch.
+        if !self.opening_as_preview {
+            self.resources.plugin_manager.read().unwrap().run_hook(
+                "after_file_open",
+                crate::services::plugins::hooks::HookArgs::AfterFileOpen {
+                    buffer_id,
+                    path: path.to_path_buf(),
+                },
+            );
+        }
 
         Ok(buffer_id)
     }
