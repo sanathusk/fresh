@@ -108,6 +108,9 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-2022
             archive_ext: zip
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            archive_ext: zip
     runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.plan.outputs.version }}
@@ -138,7 +141,7 @@ jobs:
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
           fi
           # Static link the C runtime on Windows MSVC to avoid vcruntime DLL dependency
-          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
+          if [[ "${{ matrix.target }}" == *-pc-windows-msvc ]]; then
             export RUSTFLAGS="-C target-feature=+crt-static"
           fi
           # Default features include embed-plugins; plugins (and themes via build.rs)

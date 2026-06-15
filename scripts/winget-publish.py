@@ -22,6 +22,10 @@ from pathlib import Path
 PACKAGE_ID = "sinelaw.fresh-editor"
 MANIFEST_BASE = "manifests/s/sinelaw/fresh-editor"
 WINGET_REPO = "microsoft/winget-pkgs"
+WINDOWS_INSTALLERS = [
+    ("x64", "x86_64-pc-windows-msvc"),
+    ("arm64", "aarch64-pc-windows-msvc"),
+]
 
 
 def run(cmd: list[str], check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
@@ -47,6 +51,23 @@ def get_sha256(url: str) -> str:
     return sha256.hexdigest()
 
 
+def release_asset_url(version: str, target: str) -> str:
+    return f"https://github.com/sinelaw/fresh/releases/download/v{version}/fresh-editor-{target}.zip"
+
+
+def render_installers(version: str, hashes: dict[str, str]) -> str:
+    lines = ["Installers:"]
+    for arch, target in WINDOWS_INSTALLERS:
+        lines.extend(
+            [
+                f"  - Architecture: {arch}",
+                f"    InstallerUrl: {release_asset_url(version, target)}",
+                f"    InstallerSha256: {hashes[arch]}",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def main():
     if len(sys.argv) != 2:
         print(f"Usage: {sys.argv[0]} <version>")
@@ -54,11 +75,12 @@ def main():
         sys.exit(1)
 
     version = sys.argv[1]
-    installer_url = f"https://github.com/sinelaw/fresh/releases/download/v{version}/fresh-editor-x86_64-pc-windows-msvc.zip"
     branch_name = f"{PACKAGE_ID}-{version}"
 
     print(f"Publishing {PACKAGE_ID} version {version}")
-    print(f"Installer URL: {installer_url}")
+    print("Installer URLs:")
+    for arch, target in WINDOWS_INSTALLERS:
+        print(f"  {arch}: {release_asset_url(version, target)}")
     print()
 
     # Check gh is authenticated
@@ -69,8 +91,10 @@ def main():
 
     # Compute SHA256
     print("Computing SHA256...")
-    sha256 = get_sha256(installer_url)
-    print(f"SHA256: {sha256}")
+    hashes = {}
+    for arch, target in WINDOWS_INSTALLERS:
+        hashes[arch] = get_sha256(release_asset_url(version, target))
+        print(f"SHA256 ({arch}): {hashes[arch]}")
     print()
 
     # Use cache directory for persistent clone
@@ -140,18 +164,30 @@ def main():
     shutil.copytree(old_path, new_path)
 
     # Update manifests
-    print("Updating version, URL, and SHA256...")
+    print("Updating version, URLs, and SHA256 hashes...")
     for yaml_file in new_path.glob("*.yaml"):
         content = yaml_file.read_text()
 
         # Update PackageVersion
         content = re.sub(r"^PackageVersion:.*$", f"PackageVersion: {version}", content, flags=re.MULTILINE)
 
-        # Update InstallerUrl
-        content = re.sub(r"^(\s*)InstallerUrl:.*$", rf"\1InstallerUrl: {installer_url}", content, flags=re.MULTILINE)
-
-        # Update InstallerSha256
-        content = re.sub(r"^(\s*)InstallerSha256:.*$", rf"\1InstallerSha256: {sha256}", content, flags=re.MULTILINE)
+        # Update installer entries only in the manifest file that owns them.
+        if "Installers:" in content:
+            # Keep this in sync with the existing multi-file manifest style in
+            # winget-pkgs: installer metadata at the root, arch-specific
+            # download details under Installers.
+            if "InstallerType:" not in content:
+                content = re.sub(
+                    r"^(PackageVersion:.*)$",
+                    r"\1\nInstallerLocale: en-US\nInstallerType: zip\nScope: user\nNestedInstallerType: portable\nUpgradeBehavior: uninstallPrevious\nNestedInstallerFiles:\n  - RelativeFilePath: fresh.exe\n    PortableCommandAlias: fresh",
+                    content,
+                    flags=re.MULTILINE,
+                )
+            content = re.sub(
+                r"(?ms)^Installers:\n.*?(?=^ManifestType:)",
+                render_installers(version, hashes) + "\n",
+                content,
+            )
 
         # Update ReleaseNotesUrl
         content = re.sub(
