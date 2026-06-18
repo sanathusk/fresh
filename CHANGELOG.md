@@ -1,18 +1,64 @@
 # Release Notes
 
-## Unreleased
+## 0.4.1
+
+This is mostly a bug-fix release.
+
+For live updates on Fresh, [follow me on X](https://x.com/TheNoamLewis).
+
+### Renamed features and clarified docs
+
+This releases introduces new names (in docs, cli, etc) to clarify the ambiguously used word: "session". The new vocabulary:
+
+* **daemon** — the persistent background process you attach to and detach from.
+* **workspace** — the editor's per-project unit. Multiple workspaces are managed by the Orchestrator.
+* **backend** — where a workspace runs (local / SSH / dev container / Kubernetes).
+
+The cli now supports `--cmd daemon`, but still accepts the now-deprecated `--cmd session` as an alias.
+
+### Features
+
+* **New language support**:
+  * **Assembly** via [asm-lsp](https://github.com/bergercookie/asm-lsp) (opt-in) — GAS and NASM/Intel across x86/x86_64/ARM/RISC-V, with an offer to generate `.asm-lsp.toml` from the detected dialect (#1964, requested by @viti95).
+  * **Fish** highlighting and auto-indentation (#2272), by @asukaminato0721.
+  * **Smali** highlighting (#2265), by @asukaminato0721.
+  * `yarn.lock` and other well-known lock/config files now highlight by their real format (#2326, reported by @asukaminato0721).
+* **Windows on ARM** release artifacts (#784, requested by @teobugslayer; by @NihilDigit).
+* `CancelMark` / `ClearMark` actions for fine-grained selection-anchor management (#2371, by @masmu).
+* **Git Log (Current File)** command, plus concurrent git-blame buffers.
 
 ### Improvements
 
-* **Unified workspace-trust prompt**: there is now a single trust prompt for every kind of project. Folders with a shell environment (`.envrc` / `mise` / `.tool-versions`) previously showed the env-manager plugin's own "Trust & activate" popup, while other projects showed the core trust modal — two different-looking prompts for the same decision, kept in separate state. The core trust modal is now the only trust prompt; it names the detected markers concretely, and env-manager activates the environment as a consequence of trusting (via a new `trust_changed` plugin hook) instead of asking the trust question itself.
-* **Single, configurable environment detection**: which marker files identify which environment (and how to activate it) is now defined once in core, in the `env.detectors` config — covering venv, direnv, mise, and now pipenv and poetry. The env-manager plugin no longer probes the filesystem or hardcodes markers/snippets; it reads core's detected result via `editor.detectedEnv()`. Detectors are user-extensible (add your own env type in config).
-* **Plugins can no longer set workspace trust**: a plugin may *request* the trust prompt (the user decides) but can never grant or change the trust level itself — matching VS Code / JetBrains / Zed. The level-setting actions are now denied when dispatched from a plugin.
-* **A `.venv` no longer silently grants trust**: opening a folder whose only executable content is a virtualenv now raises the trust prompt like any other project, instead of auto-trusting. A virtualenv is a module-namespace boundary, not a security one — activating it runs the repo's interpreter, which auto-executes any `.pth`/`sitecustomize.py` shipped inside it. Once trusted, it still activates with no second prompt.
-* **Hardened venv activation against path injection**: the built-in venv activation snippet now uses a relative path (`source .venv/bin/activate`) instead of interpolating the absolute workspace path into a shell command, removing a shell-injection surface for maliciously-named project directories (cf. CVE-2024-9287).
+* **Workspace trust & environments**:
+  * A single trust prompt for every project — folders with a shell environment (`.envrc` / `mise` / `.tool-versions`) no longer get the env-manager plugin's separate popup; the one prompt names the detected markers and activates on trust.
+  * Environment detection is defined once in core and user-extensible (`env.detectors`, now also covering pipenv and poetry); the activated environment applies uniformly across every backend — integrated terminal, Docker, Kubernetes, SSH.
+  * Hardening: plugins can request but never grant trust; a lone `.venv` no longer silently auto-trusts; venv activation uses a relative `source .venv/bin/activate` snippet to avoid shell injection (cf. CVE-2024-9287).
+* **Settings**: distinct, keyboard-reachable `[Inherit]` / `[Reset]` / `[Clear]` per field; the language entry dialog no longer clobbers inherited fields (#2345, reported by @ren-lv).
+* The Orchestrator New Session dialog has a clearer, keyboard-linear focus model (Tab accepts the highlighted completion).
+
+### Bug Fixes
+
+* **vi-mode**: delete/change/yank update the unnamed register (#2368, by @NihilDigit); the cursor moves one column left on leaving insert mode (#2349, by @ianyepan); `%` jumps to the matching bracket (#2346, by @ianyepan).
+* **Theme inspector & plugin panels** (#2321):
+  * Opening the theme editor no longer breaks Orchestrator dock clicks/scrolling — plugin panels are scoped to their owning plugin.
+  * Ctrl+Right-Click reports accurate theme keys for the status bar, tab bar, scrollbar, file explorer, menus, and dock, drawing above the dock.
+  * The plugin bridge no longer corrupts integers larger than 32 bits (timestamps, byte offsets).
+* Java (jdtls) and other Eclipse LSP4J servers: features registered via `client/registerCapability` now work — their string JSON-RPC ids were misparsed as notifications and dropped (#2340, reported by @maxandersen).
+* LSP/plugin popups follow the active theme's `popup_*` colors instead of a hard-wired dark background (#2379, by @peanball).
+* Paste falls back to the internal clipboard and works again on Termux (#2343, reported by @nightshade427).
+* npm `.cmd`/`.bat` shims resolve on Windows, so npm-installed language servers spawn (#2324, reported by @SupertigerDev).
+* Occurrence highlighting uses a theme-appropriate background in every shipped theme (#2312).
+* Review Diff lists files inside untracked directories (#2315).
+* The embedded terminal forwards the wheel as a mouse report to mouse-tracking programs, so scrolling no longer cycles their history (#2366).
+* Replace toolbar: checked search options are visible in every theme (#2363).
+* Alt+W and other search toggles no longer leak into the close prompt (#2359).
+* Fixed a crash on a stale soft-wrap position in multi-byte text (#2320).
+
+### Internals
+
+* Refactored the UI element rendering pipeline to make it easier to introduce alternative rendering frontends.
 
 ## 0.4.0
-
-For live updates on Fresh, [follow me on X](https://x.com/TheNoamLewis).
 
 ### Features
 
@@ -41,8 +87,6 @@ For live updates on Fresh, [follow me on X](https://x.com/TheNoamLewis).
 
 ### Bug Fixes
 
-* Java (jdtls) completion, hover, and other features registered via `client/registerCapability` now work. Fresh modelled JSON-RPC ids as integers, but Eclipse LSP4J servers (jdtls, the Groovy/Kotlin servers, lemminx) send their server-initiated requests with string ids, which Fresh misparsed as notifications — dropping every dynamic capability registration (#2340, reported by @maxandersen).
-* Occurrence highlighting now uses a theme-appropriate background in every shipped theme; the `dracula`, `nord`, and `solarized-dark` themes no longer fall back to a hard-wired dark color that clashed with their palette (#2312).
 * Windows: the TUI attaches to the parent process's stdio instead of failing in `-gui` builds (#2276, reported and fixed by @mokurin000 in #2277).
 * Right-side status bar elements render with configurable separators (#2088, reported and fixed by @PavelLoparev), and cursor column numbers are grapheme-correct (#2090, reported and fixed by @PavelLoparev).
 * Scroll panels compute focus offsets from the render width when a scrollbar is present (#2175, by @masmu).
@@ -73,8 +117,6 @@ For live updates on Fresh, [follow me on X](https://x.com/TheNoamLewis).
 * **Rainbow bracket colorization** for matching brackets across the viewport (#1088, by @asukaminato0721).
 
 * **Minimal static Linux binary** release artifact (musl, x86_64 and aarch64) optimized for a small binary size.
-
-* **Assembly language support** (#1964, requested by @viti95): Syntax highlighting for GAS/AT&T (`.s`/`.S`) and NASM/Intel (`.asm`/`.nasm`) assembly, covering x86, x86_64, ARM and RISC-V. [asm-lsp](https://github.com/bergercookie/asm-lsp) wired as the default LSP (opt-in per project). Since asm-lsp defaults to GAS/x86-64 and can't be told the dialect over LSP, opening an assembly file without an `.asm-lsp.toml` offers to generate one with the assembler and instruction set guessed from the file.
 
 ### Improvements
 
