@@ -1,11 +1,38 @@
 # Release Notes
 
-## Unreleased
+## 0.4.3
+
+For live updates on Fresh, [follow me on X](https://x.com/TheNoamLewis).
+
+> Most options below can be changed in the **Settings UI** — run **Open Settings** from the command palette (`Ctrl+P`).
+
+### Features
+
+* **Slang shader language support** — syntax highlighting and [slangd](https://github.com/shader-slang/slang) LSP integration, including **Go to Definition** into builtin modules (opened read-only via `slangd --print-builtin-module`) and graceful handling of slangd's non-spec LSP responses (#2536, #2539, requested by @batoripX in #2517).
+* **NetBSD**: Fresh now builds on NetBSD — the rquickjs bindgen feature is enabled so the plugin runtime compiles (#2534, by @ci4ic4).
 
 ### Bug Fixes
 
-* **Build**: `cargo install` / `cargo build` no longer emits spurious `failed to parse serde attribute` warnings from ts-rs for `#[serde(transparent)]` and `#[serde(serialize_with = …)]` attributes it intentionally ignores (#2519).
-* **Settings UI**: committing a text field with `Tab` now persists the typed value on Save, matching `Enter`. Previously the row showed as modified but Save wrote an empty value (#2515).
+* **Markdown compose**: fixed table corruption under rapid edits ("edit storms") — table borders are now per-line decorations, and plugin coordinates are remapped through an edit epoch so markers no longer drift (#2479, #2484).
+* **Orchestrator**: clicking a dock row focuses the activated window (#2521).
+* The startup **wave animation** is now dismissable in daemon mode (#2530, reported by @muesli).
+* **Build**: `cargo install` / `cargo build` no longer emits spurious `failed to parse serde attribute` warnings from ts-rs for `#[serde(transparent)]` and `#[serde(serialize_with = …)]` attributes it intentionally ignores (#2519, reported by @puphubv).
+* **Large files**: the load/limit behavior is now driven by a single **10 MB** threshold setting instead of several overlapping ones (#2540).
+* **Remote workspaces (SSH)** — a cluster of remote and large-file fixes (#2525):
+  * The **file explorer** now appears immediately when toggled on a slow or remote workspace, instead of staying blank until the tree loads (#2522).
+  * Fixed a boot hang and made large-file streaming reads time out on idle rather than total duration.
+  * Eliminated per-keystroke cursor lag when editing very long lines (#2529).
+* **Indentation guides**:
+  * continue unbroken through soft-wrapped continuation rows (#2538);
+  * respect a per-buffer override and the buffer kind rather than layout (#2523);
+  * stay visible when opening a file at a commit from **Git Log**.
+* **Settings**:
+  * language-entry field edits keep their committed value (including **Tab Size**), and `Esc` now cancels an in-progress edit while `Enter`/`Tab` commit it (#2537);
+  * committing a text field with `Tab` persists the typed value on Save, matching `Enter` — previously the row showed as modified but Save wrote an empty value (#2515).
+
+### Internals
+
+* Internal architecture docs were replaced with a leaner, code-verified set, new contributing guidelines were added, and a broad clippy / compiler-warning cleanup and function-decomposition pass landed across rendering, settings, and the plugin runtime.
 
 ## 0.4.2
 
