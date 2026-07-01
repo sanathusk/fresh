@@ -699,15 +699,11 @@ impl SettingsState {
     /// Buttons: 0 = Keep editing (default), 1 = Discard.
     fn handle_entry_discard_confirm_input(&mut self, event: &KeyEvent) -> InputResult {
         match event.code {
-            KeyCode::Left | KeyCode::BackTab => {
-                if self.entry_discard_confirm_selection > 0 {
-                    self.entry_discard_confirm_selection -= 1;
-                }
+            KeyCode::Left | KeyCode::BackTab if self.entry_discard_confirm_selection > 0 => {
+                self.entry_discard_confirm_selection -= 1;
             }
-            KeyCode::Right | KeyCode::Tab => {
-                if self.entry_discard_confirm_selection < 1 {
-                    self.entry_discard_confirm_selection += 1;
-                }
+            KeyCode::Right | KeyCode::Tab if self.entry_discard_confirm_selection < 1 => {
+                self.entry_discard_confirm_selection += 1;
             }
             KeyCode::Enter => {
                 match self.entry_discard_confirm_selection {
@@ -740,15 +736,11 @@ impl SettingsState {
     /// Buttons: 0 = Cancel (default), 1 = Delete.
     fn handle_entry_delete_confirm_input(&mut self, event: &KeyEvent) -> InputResult {
         match event.code {
-            KeyCode::Left | KeyCode::BackTab => {
-                if self.entry_delete_confirm_selection > 0 {
-                    self.entry_delete_confirm_selection -= 1;
-                }
+            KeyCode::Left | KeyCode::BackTab if self.entry_delete_confirm_selection > 0 => {
+                self.entry_delete_confirm_selection -= 1;
             }
-            KeyCode::Right | KeyCode::Tab => {
-                if self.entry_delete_confirm_selection < 1 {
-                    self.entry_delete_confirm_selection += 1;
-                }
+            KeyCode::Right | KeyCode::Tab if self.entry_delete_confirm_selection < 1 => {
+                self.entry_delete_confirm_selection += 1;
             }
             KeyCode::Enter => match self.entry_delete_confirm_selection {
                 0 => {
