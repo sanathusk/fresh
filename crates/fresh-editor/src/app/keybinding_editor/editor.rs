@@ -443,8 +443,7 @@ impl KeybindingEditor {
             actions.push(format!("menu_open:{}", name));
         }
 
-        // Keybinding maps: the four built-ins plus user-defined.
-        let mut keymaps: Vec<String> = ["default", "emacs", "vscode", "macos"]
+        let mut keymaps: Vec<String> = ["default", "emacs", "vscode", "macos", "vscode-macos"]
             .map(String::from)
             .to_vec();
         keymaps.extend(config.keybinding_maps.keys().cloned());
@@ -1253,7 +1252,7 @@ mod tests {
     #[test]
     fn dropdown_lists_builtin_keybinding_maps() {
         let editor = make_editor(&[]);
-        for map in ["default", "emacs", "vscode", "macos"] {
+        for map in ["default", "emacs", "vscode", "macos", "vscode-macos"] {
             let qualified = format!("switch_keybinding_map:{}", map);
             assert!(
                 editor.available_actions.contains(&qualified),

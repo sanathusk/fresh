@@ -1,0 +1,13 @@
+{
+  "inherits": "macos-gui",
+  "bindings": [
+    {
+      "comment": "VSCode macOS overrides",
+      "key": "g",
+      "modifiers": ["ctrl"],
+      "action": "goto_line",
+      "args": {},
+      "when": "normal"
+    }
+  ]
+}

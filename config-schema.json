@@ -872,7 +872,8 @@
         "emacs",
         "vscode",
         "macos",
-        "macos-gui"
+        "macos-gui",
+        "vscode-macos"
       ]
     },
     "LanguageConfig": {

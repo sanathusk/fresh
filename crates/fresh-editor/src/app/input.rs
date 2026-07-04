@@ -1886,7 +1886,7 @@ impl Editor {
             Action::SwitchKeybindingMap(map_name) => {
                 // Check if the map exists (either built-in or user-defined)
                 let is_builtin =
-                    matches!(map_name.as_str(), "default" | "emacs" | "vscode" | "macos");
+                    matches!(map_name.as_str(), "default" | "emacs" | "vscode" | "macos" | "vscode-macos");
                 let is_user_defined = self.config.keybinding_maps.contains_key(&map_name);
 
                 if is_builtin || is_user_defined {

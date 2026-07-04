@@ -233,7 +233,7 @@ pub struct KeybindingMapName(pub String);
 impl KeybindingMapName {
     /// Built-in keybinding map options shown in the settings dropdown
     pub const BUILTIN_OPTIONS: &'static [&'static str] =
-        &["default", "emacs", "vscode", "macos", "macos-gui"];
+        &["default", "emacs", "vscode", "macos", "macos-gui", "vscode-macos"];
 }
 
 impl Deref for KeybindingMapName {
@@ -3492,6 +3492,7 @@ impl Config {
             "vscode" => include_str!("../keymaps/vscode.json"),
             "macos" => include_str!("../keymaps/macos.json"),
             "macos-gui" => include_str!("../keymaps/macos-gui.json"),
+            "vscode-macos" => include_str!("../keymaps/vscode-macos.json"),
             _ => return None,
         };
 

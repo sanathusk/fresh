@@ -67,11 +67,15 @@ pub fn run_gui(
     {
         let default_macos_map = config::KeybindingMapName("macos".to_string());
         let default_map = config::KeybindingMapName("default".to_string());
+        let vscode_map = config::KeybindingMapName("vscode".to_string());
         if loaded_config.active_keybinding_map == default_macos_map
             || loaded_config.active_keybinding_map == default_map
         {
             loaded_config.active_keybinding_map =
                 config::KeybindingMapName("macos-gui".to_string());
+        } else if loaded_config.active_keybinding_map == vscode_map {
+            loaded_config.active_keybinding_map =
+                config::KeybindingMapName("vscode-macos".to_string());
         }
     }
 
